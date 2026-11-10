@@ -1,0 +1,12 @@
+# Inputs and outputs stay local
+audio/
+tools/
+lyrics.json
+tags.json
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
