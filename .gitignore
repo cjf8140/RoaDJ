@@ -1,0 +1,10 @@
+# Editor / OS noise shared by every service
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs and temp files
+*.log
+*.tmp
