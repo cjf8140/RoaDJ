@@ -100,36 +100,36 @@ SELECT id, file, title, artist, bpm,
 
        -- exhaustive fields: missing tag is the value "none", so there is no neutral case
        CASE
-         WHEN event IS NULL AND :event = 'none'                       THEN  1
+         WHEN event IS NULL AND ? = 'none'                    THEN  1
          WHEN event IS NOT NULL
-              AND ',' || event || ',' LIKE '%,' || :event || ',%'      THEN  1
+              AND ',' || event || ',' LIKE '%,' || ? || ',%'  THEN  1
          ELSE -1
        END AS event_score,
 
        CASE
-         WHEN precip IS NULL AND :precip = 'none'                     THEN  1
+         WHEN precip IS NULL AND ? = 'none'                    THEN  1
          WHEN precip IS NOT NULL
-              AND ',' || precip || ',' LIKE '%,' || :precip || ',%'   THEN  1
+              AND ',' || precip || ',' LIKE '%,' || ? || ',%'  THEN  1
          ELSE -1
        END AS precip_score,
 
        CASE
-         WHEN place IS NULL AND :place = 'none'                       THEN  1
+         WHEN place IS NULL AND ? = 'none'                     THEN  1
          WHEN place IS NOT NULL
-              AND ',' || place || ',' LIKE '%,' || :place || ',%'     THEN  1
+              AND ',' || place || ',' LIKE '%,' || ? || ',%'   THEN  1
          ELSE -1
        END AS place_score,
 
        -- time and season: missing tag is unknown, so it scores neutral
        CASE
-         WHEN time IS NULL                                            THEN  0
-         WHEN ',' || time || ',' LIKE '%,' || :time || ',%'           THEN  1
+         WHEN time IS NULL                                      THEN  0
+         WHEN ',' || time || ',' LIKE '%,' || ? || ',%'         THEN  1
          ELSE -1
        END AS time_score,
 
        CASE
-         WHEN season IS NULL                                          THEN  0
-         WHEN ',' || season || ',' LIKE '%,' || :season || ',%'       THEN  1
+         WHEN season IS NULL                                    THEN  0
+         WHEN ',' || season || ',' LIKE '%,' || ? || ',%'       THEN  1
          ELSE -1
        END AS season_score
 
@@ -139,7 +139,7 @@ ORDER BY event_score  DESC,
          place_score  DESC,
          time_score   DESC,
          season_score DESC,
-         bpm DESC,          -- DESC for happy, ASC for calm
+         bpm DESC,          -- happy: DESC, calm: ASC
          title;
 ```
 
@@ -147,10 +147,19 @@ Notes:
 
 - The commas around the stored value and in the `LIKE` pattern prevent `rain`
   from matching a future value such as `rainy`.
-- Every placeholder appears twice, because each `CASE` tests both "is the tag
-  missing" and "does it contain the value". With positional `?` binding in
-  Android, bind each value twice (ten arguments); named parameters avoid that.
-- `mood` appears in the SQL only as the `bpm` direction.
+- Each exhaustive category binds its value twice: once to test "is the tag
+  missing", once to test "does it contain the value". `time` and `season` need
+  it once. Eight arguments, in this order:
+
+  ```
+  event, event, precip, precip, place, place, time, season
+  ```
+
+- The sort direction cannot be a parameter — `ORDER BY bpm ?` is a syntax error.
+  Insert `DESC` or `ASC` into the SQL text before executing. Both come from a
+  two-value enum, so there is nothing to escape:
+  `"... season_score DESC, bpm $dir, title"`.
+- `mood` appears in the SQL only as that direction.
 - The values come from a closed enum (`ALLOWED` in `tag.py`), so they contain no
   `%` or `_`. Binding them is still preferable to concatenating them into the
   query.

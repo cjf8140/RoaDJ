@@ -98,36 +98,36 @@ SELECT id, file, title, artist, bpm,
 
        -- 열거적 필드: 빈 태그가 값 "none"이므로 중립인 경우가 없다
        CASE
-         WHEN event IS NULL AND :event = 'none'                       THEN  1
+         WHEN event IS NULL AND ? = 'none'                    THEN  1
          WHEN event IS NOT NULL
-              AND ',' || event || ',' LIKE '%,' || :event || ',%'      THEN  1
+              AND ',' || event || ',' LIKE '%,' || ? || ',%'  THEN  1
          ELSE -1
        END AS event_score,
 
        CASE
-         WHEN precip IS NULL AND :precip = 'none'                     THEN  1
+         WHEN precip IS NULL AND ? = 'none'                    THEN  1
          WHEN precip IS NOT NULL
-              AND ',' || precip || ',' LIKE '%,' || :precip || ',%'   THEN  1
+              AND ',' || precip || ',' LIKE '%,' || ? || ',%'  THEN  1
          ELSE -1
        END AS precip_score,
 
        CASE
-         WHEN place IS NULL AND :place = 'none'                       THEN  1
+         WHEN place IS NULL AND ? = 'none'                     THEN  1
          WHEN place IS NOT NULL
-              AND ',' || place || ',' LIKE '%,' || :place || ',%'     THEN  1
+              AND ',' || place || ',' LIKE '%,' || ? || ',%'   THEN  1
          ELSE -1
        END AS place_score,
 
        -- time, season: 빈 태그는 모름이므로 중립
        CASE
-         WHEN time IS NULL                                            THEN  0
-         WHEN ',' || time || ',' LIKE '%,' || :time || ',%'           THEN  1
+         WHEN time IS NULL                                      THEN  0
+         WHEN ',' || time || ',' LIKE '%,' || ? || ',%'         THEN  1
          ELSE -1
        END AS time_score,
 
        CASE
-         WHEN season IS NULL                                          THEN  0
-         WHEN ',' || season || ',' LIKE '%,' || :season || ',%'       THEN  1
+         WHEN season IS NULL                                    THEN  0
+         WHEN ',' || season || ',' LIKE '%,' || ? || ',%'       THEN  1
          ELSE -1
        END AS season_score
 
@@ -145,11 +145,18 @@ ORDER BY event_score  DESC,
 
 - 저장 값 양옆과 `LIKE` 패턴 양옆의 콤마가 `rain`이 나중에 추가될 `rainy`와
   걸리는 것을 막는다.
-- 플레이스홀더가 각각 두 번 나온다. `CASE`가 "태그가 없는가"와 "그 값을
-  포함하는가"를 둘 다 보기 때문이다. Android처럼 `?` 위치 바인딩을 쓰면 값
-  하나에 두 번씩, 총 열 개를 바인딩해야 한다. named 파라미터를 쓰면 한 번이면
-  된다.
-- `mood`는 SQL에 `bpm` 방향으로만 등장한다.
+- 열거적인 카테고리는 값을 두 번 바인딩한다. "태그가 없는가"와 "그 값을
+  포함하는가"를 둘 다 보기 때문이다. `time`과 `season`은 한 번이면 된다.
+  인자는 여덟 개, 순서는 이렇다:
+
+  ```
+  event, event, precip, precip, place, place, time, season
+  ```
+
+- 정렬 방향은 파라미터로 넣을 수 없다. `ORDER BY bpm ?`는 문법 오류이므로
+  `DESC` 아니면 `ASC`를 SQL 문자열에 넣어서 실행한다. 둘뿐인 열거값이라
+  이스케이프할 것이 없다: `"... season_score DESC, bpm $dir, title"`.
+- `mood`는 SQL에 이 방향으로만 등장한다.
 - 값은 닫힌 열거형(`tag.py`의 `ALLOWED`)에서 오므로 `%`나 `_`가 들어갈 수 없다.
   그래도 쿼리에 이어 붙이는 것보다 바인딩하는 편이 낫다.
 
