@@ -3,6 +3,7 @@ audio/
 tools/
 lyrics.json
 tags.json
+tags.db
 
 # Secrets
 .env

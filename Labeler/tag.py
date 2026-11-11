@@ -102,23 +102,13 @@ def ask(key, song, lyrics):
     return json.loads(choice["message"]["content"])
 
 
-def _align(vals, raw):
-    """Match evidence/strength to the number of tags: scalar for one, list for several."""
-    if not vals:
-        return None
+def _as_list(raw, n):
+    """Pad evidence/strength to the number of tags, preserving the model's order."""
     if isinstance(raw, list):
-        out = [(v if isinstance(v, str) else None) for v in raw][:len(vals)]
-        out += [None] * (len(vals) - len(out))
+        out = [v if isinstance(v, str) else None for v in raw][:n]
     else:
-        out = [raw if isinstance(raw, str) else None] + [None] * (len(vals) - 1)
-    return out[0] if len(out) == 1 else out
-
-
-def _strength(vals):
-    if isinstance(vals, list):
-        checked = [v if v in STRENGTHS else None for v in vals]
-        return checked if any(checked) else None
-    return vals if vals in STRENGTHS else None
+        out = [raw if isinstance(raw, str) else None]
+    return out + [None] * (n - len(out))
 
 
 def clean(raw):
@@ -128,17 +118,35 @@ def clean(raw):
     st = raw.get("strength") or {}
 
     for field in FIELDS:
-        vals = raw.get(field) or []
-        vals = [v for v in vals if isinstance(v, str)]
+        vals = [v for v in (raw.get(field) or []) if isinstance(v, str)]
         for v in vals:
             if v not in ALLOWED[field]:
                 bad.append(f"invalid {field}={v}")
-        tags[field] = sorted({v for v in vals if v in ALLOWED[field]})
-        evidence[field] = _align(tags[field], ev.get(field))
-        strength[field] = _strength(_align(tags[field], st.get(field)))
-        if tags[field] and not evidence[field]:
+
+        ordered = []
+        for v in vals:
+            if v in ALLOWED[field] and v not in ordered:
+                ordered.append(v)
+
+        if not ordered:
+            tags[field], evidence[field], strength[field] = [], None, None
+            continue
+
+        evs = _as_list(ev.get(field), len(ordered))
+        sts = [s if s in STRENGTHS else None
+               for s in _as_list(st.get(field), len(ordered))]
+
+        # sort tags together with their evidence/strength so positions stay matched
+        triples = sorted(zip(ordered, evs, sts), key=lambda t: t[0])
+        tags[field] = [t[0] for t in triples]
+        evs = [t[1] for t in triples]
+        sts = [t[2] for t in triples]
+        evidence[field] = evs[0] if len(evs) == 1 else evs
+        strength[field] = sts[0] if len(sts) == 1 else sts
+
+        if not any(evs):
             bad.append(f"{field} has no evidence")
-        if tags[field] and not strength[field]:
+        if not any(sts):
             bad.append(f"{field} has no strength")
     return tags, evidence, strength, bad
 

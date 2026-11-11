@@ -22,7 +22,10 @@ audio_api.py         ReccoBeats returns bpm, energy, valence, danceability
 bpm.py               local librosa estimate, only if both API paths fail
    │
    ▼
-tags.json
+db.py                export tags.json to tags.db (SQLite)
+   │
+   ▼
+tags.json / tags.db
 ```
 
 Every stage skips songs that are already processed, so the pipeline is safe to
@@ -107,6 +110,30 @@ tags stay cached, so no extra LLM calls are made.
 - `bpm_source` is `reccobeats` (database), `analysis` (uploaded 30s clip) or
   `librosa` (local estimate).
 
+## SQLite export
+
+`db.py` rebuilds `tags.db` from `tags.json` at the end of every run. The JSON
+stays the source of truth, so the database can be recreated at any time and the
+two never drift apart.
+
+```
+songs       id, file, title, artist, bpm, bpm_source, energy, valence,
+            danceability, model
+song_tags   song_id, field, value, strength
+```
+
+Tags are stored as rows, one per value, so services can filter with plain SQL:
+
+```sql
+SELECT s.artist, s.title, s.bpm
+FROM songs s
+JOIN song_tags a ON a.song_id = s.id AND a.field = 'precip' AND a.value = 'rain'
+JOIN song_tags b ON b.song_id = s.id AND b.field = 'time'   AND b.value = 'night';
+```
+
+`tags.db` is gitignored. Delete it to force a rebuild, or copy it to another
+service as the shared dataset.
+
 ## Files
 
 | File | Role |
@@ -117,6 +144,7 @@ tags stay cached, so no extra LLM calls are made.
 | `tag.py` | DeepSeek prompt, enum validation, `tags.json` output |
 | `audio_api.py` | ReccoBeats lookup / file analysis, `bpm.py` fallback hook |
 | `bpm.py` | Local librosa tempo estimate (last resort) |
+| `db.py` | Exports `tags.json` to `tags.db` (SQLite) |
 | `itunes.py` | Resolves official title/artist for non-Latin releases |
 | `energy.py` | Legacy local onset/RMS metrics, not part of the pipeline |
 

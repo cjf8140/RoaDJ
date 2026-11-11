@@ -19,6 +19,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import audio_api
 import bpm
+import db
 import lyrics
 import tag
 from songs import HERE, SONGS
@@ -27,7 +28,7 @@ from songs import HERE, SONGS
 STORE_LYRICS = False    # lyrics.json (가사 원문)
 STORE_EVIDENCE = False  # tags.json의 evidence (가사 인용)
 
-STEPS = (lyrics, tag, audio_api, bpm)
+STEPS = (lyrics, tag, audio_api, bpm, db)
 
 
 def main():
