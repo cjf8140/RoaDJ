@@ -117,19 +117,23 @@ stays the source of truth, so the database can be recreated at any time and the
 two never drift apart.
 
 ```
-songs       id, file, title, artist, bpm, bpm_source, energy, valence,
-            danceability, model
-song_tags   song_id, field, value, strength
+songs   id, file, title, artist, bpm, bpm_source, energy, valence,
+        danceability, model, event, precip, place, time, season
 ```
 
-Tags are stored as rows, one per value, so services can filter with plain SQL:
+One row per song. Each tag column holds comma-separated values (`rain,snow`) or
+`NULL` when the song has no tag for that field. Values stay inside the column
+because only a few songs have more than one value for a field.
 
 ```sql
-SELECT s.artist, s.title, s.bpm
-FROM songs s
-JOIN song_tags a ON a.song_id = s.id AND a.field = 'precip' AND a.value = 'rain'
-JOIN song_tags b ON b.song_id = s.id AND b.field = 'time'   AND b.value = 'night';
+SELECT artist, title, bpm
+FROM songs
+WHERE ',' || precip || ',' LIKE '%,rain,%'
+  AND ',' || time   || ',' LIKE '%,night,%';
 ```
+
+Wrap the column in commas in the `LIKE` pattern so `rain` cannot match a future
+value such as `rainy`. `NULL` means "no tag" and drops out of every match.
 
 `tags.db` is gitignored. Delete it to force a rebuild, or copy it to another
 service as the shared dataset.
@@ -145,6 +149,7 @@ service as the shared dataset.
 | `audio_api.py` | ReccoBeats lookup / file analysis, `bpm.py` fallback hook |
 | `bpm.py` | Local librosa tempo estimate (last resort) |
 | `db.py` | Exports `tags.json` to `tags.db` (SQLite) |
+| `rank_test.py` | Builds `rank_test.html`, an interactive ranking preview |
 | `itunes.py` | Resolves official title/artist for non-Latin releases |
 | `energy.py` | Legacy local onset/RMS metrics, not part of the pipeline |
 

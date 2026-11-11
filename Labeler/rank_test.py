@@ -160,13 +160,10 @@ def load():
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
     songs = []
-    for r in con.execute(
-            "SELECT id, title, artist, bpm, file FROM songs ORDER BY title"):
+    for r in con.execute("SELECT * FROM songs ORDER BY title"):
         song = dict(r)
         for f in FIELDS:
-            song[f] = [x[0] for x in con.execute(
-                "SELECT value FROM song_tags WHERE song_id = ? AND field = ? ORDER BY value",
-                (r["id"], f))]
+            song[f] = [v for v in (song.get(f) or "").split(",") if v]
         songs.append(song)
     return songs
 

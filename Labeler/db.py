@@ -1,10 +1,11 @@
-"""Export tags.json to SQLite so other services can query one shared file.
+"""Export tags.json to SQLite as one wide table so other services can query it.
 
 tags.json stays the source of truth; the database is rebuilt from scratch on
 every run, which avoids any chance of the two drifting apart.
 
-    songs       one row per track (scalar audio features)
-    song_tags   one row per tag: (song_id, field, value, strength)
+Each tag field is a single column holding comma-separated values ("rain,snow"),
+or NULL when the song has no tag for that field. Multi-value is rare, so a
+column per field beats a join table for the queries we run.
 """
 import json
 import sqlite3
@@ -14,6 +15,7 @@ from songs import HERE
 
 TAGS = HERE / "tags.json"
 DB = HERE / "tags.db"
+FIELDS = ("event", "precip", "place", "time", "season")
 
 SCHEMA = """
 DROP TABLE IF EXISTS song_tags;
@@ -28,42 +30,31 @@ CREATE TABLE songs (
     energy       REAL,
     valence      REAL,
     danceability REAL,
-    model        TEXT
+    model        TEXT,
+    event        TEXT,
+    precip       TEXT,
+    place        TEXT,
+    time         TEXT,
+    season       TEXT
 );
-CREATE TABLE song_tags (
-    song_id  TEXT NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
-    field    TEXT NOT NULL,
-    value    TEXT NOT NULL,
-    strength TEXT,
-    PRIMARY KEY (song_id, field, value)
-);
-CREATE INDEX idx_song_tags_lookup ON song_tags(field, value);
 """
 
 
-def tag_rows(entry):
+def row(sid, entry):
     tags = entry.get("tags") or {}
-    strength = entry.get("strength") or {}
-    for field, values in tags.items():
-        s = strength.get(field)
-        for i, value in enumerate(values):
-            st = s[i] if isinstance(s, list) and i < len(s) else s
-            yield field, value, st if isinstance(st, str) else None
+    return (sid, entry.get("file"), entry.get("title"), entry.get("artist"),
+            entry.get("bpm"), entry.get("bpm_source"), entry.get("energy"),
+            entry.get("valence"), entry.get("danceability"), entry.get("model"),
+            *(",".join(tags.get(f) or []) or None for f in FIELDS))
 
 
 def main():
     data = json.loads(TAGS.read_text(encoding="utf-8"))
     with sqlite3.connect(DB) as con:
         con.executescript(SCHEMA)
-        for sid, e in data.items():
-            con.execute(
-                "INSERT INTO songs VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (sid, e.get("file"), e.get("title"), e.get("artist"),
-                 e.get("bpm"), e.get("bpm_source"), e.get("energy"),
-                 e.get("valence"), e.get("danceability"), e.get("model")))
-            con.executemany(
-                "INSERT INTO song_tags VALUES (?,?,?,?)",
-                [(sid, f, v, s) for f, v, s in tag_rows(e)])
+        con.executemany(
+            f"INSERT INTO songs VALUES ({','.join('?' * 15)})",
+            [row(sid, entry) for sid, entry in data.items()])
 
     n_tags = sum(len(v) for e in data.values() for v in (e.get("tags") or {}).values())
     print(f"{len(data)} songs, {n_tags} tags -> {DB.name}")
