@@ -1,9 +1,47 @@
 # 랭킹 규칙
 
-차량의 현재 상태를 곡 순서로 바꾸는 규칙. 앱이 구현할 계약이고,
-`rank_test.py`는 같은 규칙을 미리 보여주는 도구다.
+차량의 현재 상태를 곡 순서로 바꾸는 규칙. 점수 계산과 정렬을 전부 SQL 한
+쿼리로 처리하므로 앱은 결과를 그대로 쓰면 된다.
 
-## 상태
+## DB
+
+`tags.db` (SQLite). `db.py`가 `tags.json`에서 매 실행마다 새로 만든다.
+
+```
+songs
+  id, file, title, artist
+  bpm, bpm_source, energy, valence, danceability, model
+  event, precip, place, time, season
+```
+
+곡 하나가 한 행이다. 태그는 필드 하나가 컬럼 하나이고, 값이 여러 개면 콤마로
+붙인다. `NULL`은 그 태그가 없음을 뜻한다.
+
+```
+id                            bpm    event       precip  place  time        season
+Mrs. GREEN APPLE - Magic      117.5  NULL        NULL    NULL   night       NULL
+Mrs. GREEN APPLE - Lilac       92.4  NULL        rain    NULL   day,night   spring,summer
+Ariana Grande - Santa Tell Me 191.9  christmas   NULL    NULL   night       winter
+```
+
+콤마 조회는 값 양옆에도 콤마를 붙여서 한다. `rain`이 나중에 추가될 `rainy`와
+걸리지 않게 하기 위해서다.
+
+```sql
+SELECT artist, title FROM songs
+WHERE ',' || precip || ',' LIKE '%,rain,%';
+```
+
+`NULL`의 의미는 필드에 따라 다르다. 이 차이는 아래 규칙에서 그대로 쓰인다.
+
+- `event`, `precip`, `place`: 빈 태그가 **값**이다. 행사 없음, 맑음, 특정 장소
+  없음.
+- `time`, `season`: 빈 태그는 **모름**이다. 가사가 시간대나 계절을 말하지
+  않았을 뿐이다.
+
+## 규칙
+
+### 상태
 
 모든 카테고리는 항상 값이 있다. 시계가 시간과 계절을 알고 날씨 피드가 강수를
 알기 때문에 차는 언제나 값을 보낸다. "지정 안 함" 상태는 없다.
@@ -12,7 +50,7 @@
 state = { event, precip, place, time, season, mood }
 ```
 
-## 태그 의미
+### 태그 의미
 
 | 카테고리 | 값 | 빈 태그의 의미 | 점수 범위 |
 | --- | --- | --- | --- |
@@ -27,12 +65,10 @@ state = { event, precip, place, time, season, mood }
 없음", "맑음", "특정 장소 없음"이므로 빈 태그를 다른 값과 똑같이 비교한다.
 
 `time`과 `season`은 열거적이지 않다. 낮이나 밤을 말하지 않은 곡이 "낮 곡"이
-되는 것도, 계절을 언급하지 않은 곡이 "계절 없음"이 되는 것도 아니다. 그냥
-입을 다문 것이다. 이런 곡은 어떤 요청에도 0점이다.
+되는 것도, 계절을 언급하지 않은 곡이 "계절 없음"이 되는 것도 아니다. 그냥 입을
+다문 것이다. 이런 곡은 어떤 요청에도 0점이다.
 
-## 의사코드
-
-### 카테고리 하나의 점수
+### 점수
 
 ```
 score(song, category):
@@ -58,19 +94,6 @@ score(song, category):
 ```
 priority = [event, precip, place, time, season]     # 위가 높은 우선순위
 
-제목 오름차순으로 먼저 정렬                    # 결정적인 기본 순서
-그다음 priority를 낮은 것부터 안정 정렬:
-
-    for category in [mood, season, time, place, precip, event]:
-        score(song, category) 내림차순 정렬
-
-    if mood == happy: bpm 내림차순 정렬
-    else:             bpm 오름차순 정렬
-```
-
-사전식 비교와 같다:
-
-```
 compare(a, b):
     for category in priority:
         d = score(b, category) - score(a, category)
@@ -82,16 +105,14 @@ compare(a, b):
 
 **가중치 합산이 아니다.** 두 곡이 처음으로 달라지는 카테고리가 순서를 정하고,
 아래 카테고리는 그 위 카테고리가 전부 같은 곡들 사이에서만 순서를 가른다.
-`event`를 틀린 것을 `season`을 맞혀서 만회할 수 없다.
+`event`를 틀린 것을 `season`을 맞혀서 만회할 수 없다. 예를 들어 `event`가
+우선이므로 `precip`를 틀린 크리스마스 곡이 눈 곡보다 위에 온다.
 
 `mood`가 맨 뒤인 것은 의도적이다. bpm은 연속값이라 앞에 두면 그 자체로 순서가
 끝나고, 아래 카테고리는 비교될 기회조차 없다. 맨 뒤에 두면 태그 다섯 개가 모두
 같은 곡들 사이에서만 방향을 정한다.
 
-## SQL
-
-`tags.db`는 곡 하나가 한 행이고, 태그 필드 하나가 컬럼 하나다. 값이 여러 개면
-콤마로 붙여 저장하고(`rain,snow`), `NULL`은 태그 없음을 뜻한다.
+### SQL
 
 ```sql
 SELECT id, file, title, artist, bpm,
@@ -141,49 +162,148 @@ ORDER BY event_score  DESC,
          title;
 ```
 
-주의:
-
-- 저장 값 양옆과 `LIKE` 패턴 양옆의 콤마가 `rain`이 나중에 추가될 `rainy`와
-  걸리는 것을 막는다.
-- 열거적인 카테고리는 값을 두 번 바인딩한다. "태그가 없는가"와 "그 값을
-  포함하는가"를 둘 다 보기 때문이다. `time`과 `season`은 한 번이면 된다.
-  인자는 여덟 개, 순서는 이렇다:
+- 인자는 여덟 개, 순서는 이렇다. `time`, `season`은 `NULL` 분기에 파라미터가
+  없어서 한 번만 쓴다.
 
   ```
   event, event, precip, precip, place, place, time, season
   ```
 
-- 정렬 방향은 파라미터로 넣을 수 없다. `ORDER BY bpm ?`는 문법 오류이므로
-  `DESC` 아니면 `ASC`를 SQL 문자열에 넣어서 실행한다. 둘뿐인 열거값이라
-  이스케이프할 것이 없다: `"... season_score DESC, bpm $dir, title"`.
+- 정렬 방향은 파라미터로 넣을 수 없다. `ORDER BY bpm ?`는 문법 오류다.
+  `DESC` 아니면 `ASC`를 SQL 문자열에 넣어 실행한다. 둘뿐인 값이라 이스케이프할
+  것이 없다.
 - `mood`는 SQL에 이 방향으로만 등장한다.
-- 값은 닫힌 열거형(`tag.py`의 `ALLOWED`)에서 오므로 `%`나 `_`가 들어갈 수 없다.
+- 값은 닫힌 열거형(`tag.py`의 `ALLOWED`)이라 `%`나 `_`가 들어갈 수 없다.
   그래도 쿼리에 이어 붙이는 것보다 바인딩하는 편이 낫다.
 
-## 예시
+## AAOS Kotlin 예제
 
-상태: `event=none, precip=snow, place=none, time=night, season=winter, mood=happy`
+`tags.db`를 `app/src/main/assets/tags.db`에 넣고, 첫 실행 때 앱 DB 경로로
+복사해서 연다.
 
-| 순위 | 곡 | bpm | event | precip | place | time | season |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Santa Tell Me | 191.9 | +1 | -1 | +1 | +1 | +1 |
-| 2 | 僕のこと | 160.0 | -1 | +1 | +1 | 0 | +1 |
-| 3 | ヒロイン | 76.2 | -1 | +1 | -1 | +1 | +1 |
-| 4 | Magic | 117.5 | -1 | -1 | +1 | +1 | 0 |
-| 5 | 비도 오고 그래서 | 79.2 | -1 | -1 | +1 | +1 | 0 |
-
-1번 곡은 `precip`를 **틀렸는데도** 1위다. `event` 점수가 더 높기 때문이다.
-2·3번은 `place`가 나쁜데도 4·5번을 이긴다. `precip`에서 앞서기 때문이다.
-우선순위가 의도대로 동작하는 모습이다.
-
-다섯 점수가 모두 같은 곡들 사이에서는 `bpm`이 순서를 정한다. `happy`면
-내림차순.
-
-## 미리보기 다시 만들기
-
-```
-py -3 run.py         # tags.db 갱신
-py -3 rank_test.py   # rank_test.html 생성
+```kotlin
+fun openTagsDb(context: Context): SQLiteDatabase {
+    val target = context.getDatabasePath("tags.db")
+    if (!target.exists()) {
+        target.parentFile?.mkdirs()
+        context.assets.open("tags.db").use { input ->
+            target.outputStream().use { input.copyTo(it) }
+        }
+    }
+    return SQLiteDatabase.openDatabase(
+        target.path, null, SQLiteDatabase.OPEN_READONLY
+    )
+}
 ```
 
-`rank_test.html`을 브라우저로 열면 된다. 생성물이라 저장소에는 없다.
+쿼리는 위 SQL 그대로다. 별칭은 `ORDER BY`에서 바로 쓸 수 있으므로 서브쿼리로
+감쌀 필요가 없다.
+
+```kotlin
+private val SCORES = """
+    CASE WHEN event IS NULL AND ? = 'none' THEN 1
+         WHEN event IS NOT NULL AND (',' || event || ',') LIKE ('%,' || ? || ',%') THEN 1
+         ELSE -1 END AS event_score,
+    CASE WHEN precip IS NULL AND ? = 'none' THEN 1
+         WHEN precip IS NOT NULL AND (',' || precip || ',') LIKE ('%,' || ? || ',%') THEN 1
+         ELSE -1 END AS precip_score,
+    CASE WHEN place IS NULL AND ? = 'none' THEN 1
+         WHEN place IS NOT NULL AND (',' || place || ',') LIKE ('%,' || ? || ',%') THEN 1
+         ELSE -1 END AS place_score,
+    CASE WHEN time IS NULL THEN 0
+         WHEN (',' || time || ',') LIKE ('%,' || ? || ',%') THEN 1
+         ELSE -1 END AS time_score,
+    CASE WHEN season IS NULL THEN 0
+         WHEN (',' || season || ',') LIKE ('%,' || ? || ',%') THEN 1
+         ELSE -1 END AS season_score
+"""
+
+data class Song(
+    val id: String,
+    val file: String,
+    val title: String?,
+    val artist: String?,
+    val bpm: Double?,
+)
+
+fun rank(db: SQLiteDatabase, state: CarState): List<Song> {
+    val dir = if (state.mood == Mood.HAPPY) "DESC" else "ASC"
+    val sql = """
+        SELECT id, file, title, artist, bpm,
+               $SCORES
+        FROM songs
+        ORDER BY event_score  DESC,
+                 precip_score DESC,
+                 place_score  DESC,
+                 time_score   DESC,
+                 season_score DESC,
+                 bpm $dir,
+                 title
+    """.trimIndent()
+
+    val args = arrayOf(
+        state.event, state.event,
+        state.precip, state.precip,
+        state.place, state.place,
+        state.time, state.season,
+    )
+
+    return db.rawQuery(sql, args).use { c ->
+        buildList {
+            while (c.moveToNext()) {
+                add(Song(
+                    id = c.getString(0),
+                    file = c.getString(1),
+                    title = if (c.isNull(2)) null else c.getString(2),
+                    artist = if (c.isNull(3)) null else c.getString(3),
+                    bpm = if (c.isNull(4)) null else c.getDouble(4),
+                ))
+            }
+        }
+    }
+}
+```
+
+Room을 쓴다면 파라미터를 이름으로 바인딩할 수 있어서 다섯 개만 넘기면 된다.
+정렬 방향은 `-bpm`으로 뒤집어서 한 쿼리로 처리한다.
+
+```kotlin
+@Query("""
+    SELECT * FROM songs
+    ORDER BY
+      CASE WHEN event IS NULL AND :event = 'none' THEN 1
+           WHEN event IS NOT NULL AND (',' || event || ',') LIKE ('%,' || :event || ',%') THEN 1
+           ELSE -1 END DESC,
+      CASE WHEN precip IS NULL AND :precip = 'none' THEN 1
+           WHEN precip IS NOT NULL AND (',' || precip || ',') LIKE ('%,' || :precip || ',%') THEN 1
+           ELSE -1 END DESC,
+      CASE WHEN place IS NULL AND :place = 'none' THEN 1
+           WHEN place IS NOT NULL AND (',' || place || ',') LIKE ('%,' || :place || ',%') THEN 1
+           ELSE -1 END DESC,
+      CASE WHEN time IS NULL THEN 0
+           WHEN (',' || time || ',') LIKE ('%,' || :time || ',%') THEN 1
+           ELSE -1 END DESC,
+      CASE WHEN season IS NULL THEN 0
+           WHEN (',' || season || ',') LIKE ('%,' || :season || ',%') THEN 1
+           ELSE -1 END DESC,
+      CASE WHEN :mood = 'happy' THEN -COALESCE(bpm, 0) ELSE COALESCE(bpm, 0) END ASC,
+      title
+""")
+fun rank(event: String, precip: String, place: String,
+         time: String, season: String, mood: String): List<SongEntity>
+```
+
+Room에 미리 만들어진 DB를 넣을 때:
+
+```kotlin
+Room.databaseBuilder(context, AppDb::class.java, "tags.db")
+    .createFromAsset("tags.db")
+    .build()
+```
+
+이 경우 Entity의 컬럼 이름과 타입이 `tags.db`와 정확히 같아야 한다. Room은 첫
+실행 때 스키마를 검증한다.
+
+---
+SQLite의 `?` 바인딩은 Android 문서 기준이다. `ORDER BY` 별칭 참조와
+`CASE`·`||`·`LIKE`는 SQLite 3.18 이상이면 되고 AAOS는 그보다 최신이다.
