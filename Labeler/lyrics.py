@@ -22,8 +22,8 @@ def api(path, **params):
     req = urllib.request.Request(url, headers=UA)
     try:
         return json.load(urllib.request.urlopen(req, timeout=20))
-    except urllib.error.HTTPError as e:
-        return {"error": e.code}
+    except OSError as e:            # HTTPError, timeout, DNS, connection reset
+        return {"error": getattr(e, "code", str(e))}
 
 
 def has_lyrics(rec):

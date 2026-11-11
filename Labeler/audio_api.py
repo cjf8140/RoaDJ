@@ -36,9 +36,12 @@ def get(path, **params):
             return json.load(urllib.request.urlopen(
                 urllib.request.Request(url, headers=UA), timeout=25))
         except urllib.error.HTTPError as e:
-            if e.code != 429 or attempt == 3:
-                raise
-            time.sleep(5 * (attempt + 1))
+            if e.code == 429 and attempt < 3:
+                time.sleep(5 * (attempt + 1))
+                continue
+            if e.code != 429 and 400 <= e.code < 500:
+                return {}          # API가 이 곡/가수를 모른다. 파일 분석으로 넘긴다
+            raise
 
 
 def _search(song, query, artist):
