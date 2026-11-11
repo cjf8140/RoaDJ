@@ -47,7 +47,8 @@ TEMPLATE = """<!doctype html>
 <h1>Ranking test</h1>
 <p class="hint">Top to bottom is priority; the first category where two songs differ decides.
 +1 = match, -1 = different value, 0 = the song says nothing.
-For event, place and precip a missing tag is the value "none"; for time and season it is unknown.</p>
+For event, place and precip a missing tag is the value "none"; for time and season it is unknown.
+Mood has no tags: happy sorts bpm high to low, calm sorts it low to high.</p>
 <table id="controls"><tbody></tbody></table>
 <p id="summary"></p>
 <table id="result"><thead></thead><tbody></tbody></table>
@@ -59,13 +60,13 @@ const FIELDS = [
   { key: "precip", values: ["none", "rain", "snow"], exhaustive: true },
   { key: "place",  values: ["none", "mountain", "sea", "river", "city"], exhaustive: true },
   { key: "time",   values: ["day", "night"] },
-  { key: "mood",   values: ["happy", "calm"] },
+  { key: "mood",   values: ["happy", "calm"], direction: true },
   { key: "season", values: ["spring", "summer", "autumn", "winter"] },
 ];
 
 const state = {
   event: "none", precip: "none", place: "none",
-  time: "night", mood: "calm", season: "winter", moodCut: 120,
+  time: "night", mood: "calm", season: "winter",
 };
 const esc = s => String(s).replace(/[&<>"]/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -77,10 +78,6 @@ const summary = document.querySelector("#summary");
 
 function scoreOf(song, key) {
   const req = state[key];
-  if (key === "mood") {
-    if (song.bpm == null) return 0;
-    return ((song.bpm >= state.moodCut) === (req === "happy")) ? 1 : -1;
-  }
   const have = song[key] || [];
   const absentIsValue = FIELDS.find(f => f.key === key).exhaustive;
   if (have.length === 0) {
@@ -106,12 +103,8 @@ function buildControls() {
     });
 
     const note = tr.lastElementChild;
-    if (f.key === "mood") {
-      note.innerHTML = 'happy = bpm &ge; <input type="number" id="cut" value="120" step="1" style="width:64px">';
-      note.querySelector("#cut").addEventListener("input", e => {
-        state.moodCut = Number(e.target.value) || 0;
-        render();
-      });
+    if (f.direction) {
+      note.textContent = "bpm DESC for happy, ASC for calm";
     } else {
       const tagged = SONGS.filter(s => (s[f.key] || []).length).length;
       note.textContent = `${tagged}/${SONGS.length} tagged, empty = `
@@ -125,6 +118,11 @@ function render() {
   const act = FIELDS;
   const rows = SONGS.slice().sort((a, b) => {
     for (const f of act) {
+      if (f.direction) {
+        const d = (state[f.key] === "happy" ? -1 : 1) * ((a.bpm ?? 0) - (b.bpm ?? 0));
+        if (d) return d;
+        continue;
+      }
       const d = scoreOf(b, f.key) - scoreOf(a, f.key);
       if (d) return d;
     }
@@ -138,11 +136,13 @@ function render() {
 
   tbody.innerHTML = rows.map((s, i) => {
     const cells = act.map(f => {
+      if (f.direction) {
+        const shown = s.bpm == null ? "?" : s.bpm;
+        return `<td class="num">${shown} <span class="tags">${state[f.key] === "happy" ? "desc" : "asc"}</span></td>`;
+      }
       const v = scoreOf(s, f.key);
       const cls = v > 0 ? "pos" : v < 0 ? "neg" : "zero";
-      const shown = f.key === "mood"
-        ? (s.bpm == null ? "?" : s.bpm)
-        : ((s[f.key] || []).join(",") || (f.exhaustive ? "none" : "?"));
+      const shown = (s[f.key] || []).join(",") || (f.exhaustive ? "none" : "?");
       return `<td class="num ${cls}">${shown} <span class="tags">${v > 0 ? "+1" : v < 0 ? "-1" : "0"}</span></td>`;
     }).join("");
     const all = FIELDS.filter(f => f.key !== "mood")
@@ -153,8 +153,9 @@ function render() {
       + `${cells}<td class="tags">${all || "-"}</td></tr>`;
   }).join("");
 
-  summary.textContent = "ORDER BY "
-    + act.map(f => f.key + " DESC").join(", ") + ", title";
+  summary.textContent = "ORDER BY " + act.map(f =>
+    f.direction ? `bpm ${state[f.key] === "happy" ? "DESC" : "ASC"}`
+                : f.key + " DESC").join(", ") + ", title";
 }
 
 buildControls();
