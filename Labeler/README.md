@@ -153,6 +153,7 @@ service as the shared dataset.
 | `bpm.py` | Local librosa tempo estimate (last resort) |
 | `db.py` | Exports `tags.json` to `tags.db` (SQLite) |
 | `rank_test.py` | Builds `rank_test.html`, an interactive ranking preview |
+| `RANKING.md` | Scoring and ordering rules for the app (pseudocode + SQL) |
 | `itunes.py` | Resolves official title/artist for non-Latin releases |
 | `energy.py` | Legacy local onset/RMS metrics, not part of the pipeline |
 
