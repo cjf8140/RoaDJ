@@ -154,6 +154,7 @@ service as the shared dataset.
 | `db.py` | Exports `tags.json` to `tags.db` (SQLite) |
 | `rank_test.py` | Builds `rank_test.html`, an interactive ranking preview |
 | `RANKING.md` | Scoring and ordering rules for the app (pseudocode + SQL) |
+| `RANKING.ko.md` | Same rules in Korean |
 | `itunes.py` | Resolves official title/artist for non-Latin releases |
 | `energy.py` | Legacy local onset/RMS metrics, not part of the pipeline |
 
