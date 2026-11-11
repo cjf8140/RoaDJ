@@ -60,8 +60,8 @@ const FIELDS = [
   { key: "precip", values: ["none", "rain", "snow"], exhaustive: true },
   { key: "place",  values: ["none", "mountain", "sea", "river", "city"], exhaustive: true },
   { key: "time",   values: ["day", "night"] },
-  { key: "mood",   values: ["happy", "calm"], direction: true },
   { key: "season", values: ["spring", "summer", "autumn", "winter"] },
+  { key: "mood",   values: ["happy", "calm"], direction: true },
 ];
 
 const state = {
