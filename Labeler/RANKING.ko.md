@@ -264,46 +264,6 @@ fun rank(db: SQLiteDatabase, state: CarState): List<Song> {
 }
 ```
 
-Room을 쓴다면 파라미터를 이름으로 바인딩할 수 있어서 다섯 개만 넘기면 된다.
-정렬 방향은 `-bpm`으로 뒤집어서 한 쿼리로 처리한다.
-
-```kotlin
-@Query("""
-    SELECT * FROM songs
-    ORDER BY
-      CASE WHEN event IS NULL AND :event = 'none' THEN 1
-           WHEN event IS NOT NULL AND (',' || event || ',') LIKE ('%,' || :event || ',%') THEN 1
-           ELSE -1 END DESC,
-      CASE WHEN precip IS NULL AND :precip = 'none' THEN 1
-           WHEN precip IS NOT NULL AND (',' || precip || ',') LIKE ('%,' || :precip || ',%') THEN 1
-           ELSE -1 END DESC,
-      CASE WHEN place IS NULL AND :place = 'none' THEN 1
-           WHEN place IS NOT NULL AND (',' || place || ',') LIKE ('%,' || :place || ',%') THEN 1
-           ELSE -1 END DESC,
-      CASE WHEN time IS NULL THEN 0
-           WHEN (',' || time || ',') LIKE ('%,' || :time || ',%') THEN 1
-           ELSE -1 END DESC,
-      CASE WHEN season IS NULL THEN 0
-           WHEN (',' || season || ',') LIKE ('%,' || :season || ',%') THEN 1
-           ELSE -1 END DESC,
-      CASE WHEN :mood = 'happy' THEN -COALESCE(bpm, 0) ELSE COALESCE(bpm, 0) END ASC,
-      title
-""")
-fun rank(event: String, precip: String, place: String,
-         time: String, season: String, mood: String): List<SongEntity>
-```
-
-Room에 미리 만들어진 DB를 넣을 때:
-
-```kotlin
-Room.databaseBuilder(context, AppDb::class.java, "tags.db")
-    .createFromAsset("tags.db")
-    .build()
-```
-
-이 경우 Entity의 컬럼 이름과 타입이 `tags.db`와 정확히 같아야 한다. Room은 첫
-실행 때 스키마를 검증한다.
-
 ---
 SQLite의 `?` 바인딩은 Android 문서 기준이다. `ORDER BY` 별칭 참조와
 `CASE`·`||`·`LIKE`는 SQLite 3.18 이상이면 되고 AAOS는 그보다 최신이다.
