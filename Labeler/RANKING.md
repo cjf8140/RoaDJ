@@ -3,8 +3,6 @@
 How a service turns the current car state into a song order. This is the
 contract the app implements; `rank_test.py` is a preview of the same rules.
 
-Korean version: [RANKING.ko.md](RANKING.ko.md)
-
 ## State
 
 Every category is always set. The car always sends a value (the clock knows
