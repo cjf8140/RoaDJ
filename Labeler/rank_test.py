@@ -18,7 +18,7 @@ from songs import HERE
 
 DB = HERE / "tags.db"
 OUT = HERE / "rank_test.html"
-FIELDS = ("event", "precip", "place", "time", "season")
+FIELDS = ("lang", "event", "precip", "place", "time", "season")
 
 TEMPLATE = """<!doctype html>
 <html lang="en">
@@ -47,7 +47,7 @@ TEMPLATE = """<!doctype html>
 <h1>Ranking test</h1>
 <p class="hint">Top to bottom is priority; the first category where two songs differ decides.
 +1 = match, -1 = different value, 0 = the song says nothing.
-For event, place and precip a missing tag is the value "none"; for time and season it is unknown.
+For event, place and precip a missing tag is the value "none"; for lang, time and season it is unknown.
 Mood has no tags: happy sorts bpm high to low, calm sorts it low to high.</p>
 <table id="controls"><tbody></tbody></table>
 <p id="summary"></p>
@@ -56,6 +56,7 @@ Mood has no tags: happy sorts bpm high to low, calm sorts it low to high.</p>
 const SONGS = __SONGS__;
 
 const FIELDS = [
+  { key: "lang",   values: ["ko", "en", "ja"] },
   { key: "event",  values: ["none", "christmas"], exhaustive: true },
   { key: "precip", values: ["none", "rain", "snow"], exhaustive: true },
   { key: "place",  values: ["none", "mountain", "sea", "river", "city"], exhaustive: true },
@@ -65,7 +66,7 @@ const FIELDS = [
 ];
 
 const state = {
-  event: "none", precip: "none", place: "none",
+  lang: "ko", event: "none", precip: "none", place: "none",
   time: "night", mood: "calm", season: "winter",
 };
 const esc = s => String(s).replace(/[&<>"]/g,
@@ -145,7 +146,7 @@ function render() {
       const shown = (s[f.key] || []).join(",") || (f.exhaustive ? "none" : "?");
       return `<td class="num ${cls}">${shown} <span class="tags">${v > 0 ? "+1" : v < 0 ? "-1" : "0"}</span></td>`;
     }).join("");
-    const all = FIELDS.filter(f => f.key !== "mood")
+    const all = FIELDS.filter(f => f.key !== "mood" && f.key !== "lang")
       .map(f => ({ key: f.key, v: (s[f.key] || []).join(",") }))
       .filter(x => x.v).map(x => `${x.key}:${x.v}`).join("  ");
     return `<tr><td class="num">${i + 1}</td><td>${esc(s.title)}</td>`

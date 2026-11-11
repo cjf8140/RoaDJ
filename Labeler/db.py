@@ -25,6 +25,7 @@ CREATE TABLE songs (
     file         TEXT NOT NULL,
     title        TEXT,
     artist       TEXT,
+    lang         TEXT,
     bpm          REAL,
     bpm_source   TEXT,
     energy       REAL,
@@ -43,8 +44,9 @@ CREATE TABLE songs (
 def row(sid, entry):
     tags = entry.get("tags") or {}
     return (sid, entry.get("file"), entry.get("title"), entry.get("artist"),
-            entry.get("bpm"), entry.get("bpm_source"), entry.get("energy"),
-            entry.get("valence"), entry.get("danceability"), entry.get("model"),
+            entry.get("lang"), entry.get("bpm"), entry.get("bpm_source"),
+            entry.get("energy"), entry.get("valence"), entry.get("danceability"),
+            entry.get("model"),
             *(",".join(tags.get(f) or []) or None for f in FIELDS))
 
 
@@ -53,7 +55,7 @@ def main():
     with sqlite3.connect(DB) as con:
         con.executescript(SCHEMA)
         con.executemany(
-            f"INSERT INTO songs VALUES ({','.join('?' * 15)})",
+            f"INSERT INTO songs VALUES ({','.join('?' * 16)})",
             [row(sid, entry) for sid, entry in data.items()])
 
     n_tags = sum(len(v) for e in data.values() for v in (e.get("tags") or {}).values())

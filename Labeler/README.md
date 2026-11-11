@@ -13,7 +13,8 @@ audio/*.mp3
 lyrics.py            fetch lyrics from LRCLIB
    │
    ▼
-tag.py               DeepSeek infers event / precip / place / time / season
+tag.py               DeepSeek infers event / precip / place / time / season,
+   │                 lang comes from the script of the lyrics
    │
    ▼
 audio_api.py         ReccoBeats returns bpm, energy, valence, danceability
@@ -81,6 +82,7 @@ tags stay cached, so no extra LLM calls are made.
   "file": "Mrs. GREEN APPLE - Lilac.mp3",
   "title": "Lilac",
   "artist": "Mrs. GREEN APPLE",
+  "lang": "ja",
   "tags": {
     "event": [],
     "precip": ["rain"],
@@ -105,6 +107,8 @@ tags stay cached, so no extra LLM calls are made.
 ```
 
 - `tags` uses only the allowed values; an empty array means "not found", not "no".
+- `lang` is `ko`, `en` or `ja`, chosen by the script of the lyrics (Hangul,
+  kana, otherwise Latin). No LLM is involved. It is `null` when no lyrics exist.
 - `strength` marks whether the tag word appears in the lyrics (`explicit`) or
   was inferred from meaning (`implied`). When there are multiple tag in one category, strength can be null.
 - `bpm_source` is `reccobeats` (database), `analysis` (uploaded 30s clip) or
@@ -117,7 +121,7 @@ stays the source of truth, so the database can be recreated at any time and the
 two never drift apart.
 
 ```
-songs   id, file, title, artist, bpm, bpm_source, energy, valence,
+songs   id, file, title, artist, lang, bpm, bpm_source, energy, valence,
         danceability, model, event, precip, place, time, season
 ```
 
@@ -135,8 +139,8 @@ WHERE ',' || precip || ',' LIKE '%,rain,%'
 Wrap the column in commas in the `LIKE` pattern so `rain` cannot match a future
 value such as `rainy`. `NULL` means the song has no tag for that field, and how
 to read it depends on the field: for `event`, `place` and `precip` it is the
-value `none` (no event, no particular place, clear weather); for `time` and
-`season` it means unknown.
+value `none` (no event, no particular place, clear weather); for `lang`, `time`
+and `season` it means unknown.
 
 `tags.db` is gitignored. Delete it to force a rebuild, or copy it to another
 service as the shared dataset.

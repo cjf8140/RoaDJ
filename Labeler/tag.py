@@ -3,9 +3,11 @@
 태그는 가사에 직접 등장하는 것(explicit)과 의미로 함의된 것(implied)을 구분해서 받는다.
 모든 태그에 근거 구절 인용을 요구하고, 허용값 밖의 출력은 버린다.
 mood는 가사가 아니라 음악(템포/에너지)에서 나오므로 여기서 판정하지 않는다.
+lang은 가사의 문자 종류로 판정한다(LLM 아님).
 """
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -26,6 +28,15 @@ ALLOWED = {
 }
 FIELDS = ("event", "precip", "place", "time", "season")
 STRENGTHS = ("explicit", "implied")
+
+KANA = re.compile(r"[\u3040-\u30ff]")     # 히라가나 + 가타카나
+HANGUL = re.compile(r"[\uac00-\ud7a3]")
+
+
+def lang(text):
+    """가사의 문자 종류로 곡 언어를 판정한다. 가나는 일본어에만 있다."""
+    kana, ko = len(KANA.findall(text)), len(HANGUL.findall(text))
+    return "ja" if kana > ko else "ko" if ko else "en"
 
 SYSTEM = """You label songs for an in-car, environment-aware music recommender.
 Read the lyrics, infer the situation they describe, and return exactly one JSON object."""
@@ -195,6 +206,8 @@ def main():
             entry.pop("evidence", None)  # 배포용: 가사 인용을 지운다
         data[song["id"]] = {"file": song["file"],
                             "title": song["title"], "artist": song["artist"],
+                            "lang": lang(lyrics[song["id"]]["lyrics"])
+                                    if song["id"] in lyrics else None,
                             **entry}
 
     OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

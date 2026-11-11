@@ -9,7 +9,7 @@
 
 ```
 songs
-  id, file, title, artist
+  id, file, title, artist, lang
   bpm, bpm_source, energy, valence, danceability, model
   event, precip, place, time, season
 ```
@@ -18,10 +18,10 @@ songs
 붙인다. `NULL`은 그 태그가 없음을 뜻한다.
 
 ```
-id                            bpm    event       precip  place  time        season
-Mrs. GREEN APPLE - Magic      117.5  NULL        NULL    NULL   night       NULL
-Mrs. GREEN APPLE - Lilac       92.4  NULL        rain    NULL   day,night   spring,summer
-Ariana Grande - Santa Tell Me 191.9  christmas   NULL    NULL   night       winter
+id                            lang  bpm    event       precip  place  time        season
+Mrs. GREEN APPLE - Magic      ja    117.5  NULL        NULL    NULL   night       NULL
+Mrs. GREEN APPLE - Lilac      ja     92.4  NULL        rain    NULL   day,night   spring,summer
+Ariana Grande - Santa Tell Me en    191.9  christmas   NULL    NULL   night       winter
 ```
 
 콤마 조회는 값 양옆에도 콤마를 붙여서 한다. `rain`이 나중에 추가될 `rainy`와
@@ -38,22 +38,27 @@ WHERE ',' || precip || ',' LIKE '%,rain,%';
   없음.
 - `time`, `season`: 빈 태그는 **모름**이다. 가사가 시간대나 계절을 말하지
   않았을 뿐이다.
+- `lang`: 빈 값은 **모름**이다. 가사를 구하지 못한 곡이다. 값은 `ko`, `en`,
+  `ja` 셋이고 "없음"에 해당하는 값은 없다. 가사의 문자 종류로 판정하므로
+  LLM을 쓰지 않는다(`tag.py`).
 
 ## 규칙
 
 ### 상태
 
-모든 카테고리는 항상 값이 있다. 시계가 시간과 계절을 알고 날씨 피드가 강수를
-알기 때문에 차는 언제나 값을 보낸다. "지정 안 함" 상태는 없다.
+모든 카테고리는 항상 값이 있다. 시계가 시간과 계절을 알고, 날씨 피드가 강수를
+알고, 사용자 설정이 언어를 알기 때문에 차는 언제나 값을 보낸다. "지정 안 함"
+상태는 없다.
 
 ```
-state = { event, precip, place, time, season, mood }
+state = { lang, event, precip, place, time, season, mood }
 ```
 
 ### 태그 의미
 
 | 카테고리 | 값 | 빈 태그의 의미 | 점수 범위 |
 | --- | --- | --- | --- |
+| `lang` | `ko`, `en`, `ja` | 모름 | +1 / 0 / -1 |
 | `event` | `none`, `christmas` | `none` (행사 없음) | +1 / -1 |
 | `precip` | `none`, `rain`, `snow` | `none` (맑음) | +1 / -1 |
 | `place` | `none`, `mountain`, `sea`, `river`, `city` | `none` (특정 장소 없음) | +1 / -1 |
@@ -68,6 +73,11 @@ state = { event, precip, place, time, season, mood }
 되는 것도, 계절을 언급하지 않은 곡이 "계절 없음"이 되는 것도 아니다. 그냥 입을
 다문 것이다. 이런 곡은 어떤 요청에도 0점이다.
 
+`lang`도 열거적이지 않다. 빈 값은 가사를 못 구한 곡이고, 그런 곡은 어떤 언어
+요청에도 0점이다. `lang`에는 "none" 값이 없다. 요청은 언제나 셋 중 하나다.
+`lang`은 태그가 아니라 컬럼 하나짜리 값이므로, 아래 의사코드에서는 `values`가
+원소 하나짜리 리스트(`["ja"]`)이거나 빈 리스트일 뿐이다.
+
 ### 점수
 
 ```
@@ -81,7 +91,7 @@ score(song, category):
     if values가 비었으면:
         if category in (event, precip, place):
             return request == "none"이면 +1, 아니면 -1
-        return 0                      # time, season: 모름, 중립
+        return 0                      # lang, time, season: 모름, 중립
 
     if request == "none":
         return -1                     # none을 원했는데 곡이 값을 주장함
@@ -92,7 +102,7 @@ score(song, category):
 ### 정렬
 
 ```
-priority = [event, precip, place, time, season]     # 위가 높은 우선순위
+priority = [lang, event, precip, place, time, season]     # 위가 높은 우선순위
 
 compare(a, b):
     for category in priority:
@@ -112,10 +122,24 @@ compare(a, b):
 끝나고, 아래 카테고리는 비교될 기회조차 없다. 맨 뒤에 두면 태그 다섯 개가 모두
 같은 곡들 사이에서만 방향을 정한다.
 
+`lang`이 맨 앞인 것도 의도적이다. 언어가 다르면 가사를 알아듣지 못하므로 곡
+순서가 먼저 언어 블록으로 갈린다. `ko`를 요청하면 한국어 곡이 전부 앞에 오고,
+그 안에서 `event`부터 `season`까지가 순서를 정한다. 환경 태그는 각 블록 안에서
+그대로 동작한다. `lang`이 범주형이라 같은 언어끼리는 모두 +1이므로 아래
+카테고리가 비교될 기회를 잃지 않는다. (bpm처럼 연속값을 앞에 두면 그 자체로
+순서가 끝나는 것과 다르다.)
+
 ### SQL
 
 ```sql
 SELECT id, file, title, artist, bpm,
+
+       -- lang은 단일 값이라 콤마 목록이 필요 없다
+       CASE
+         WHEN lang IS NULL THEN  0
+         WHEN lang = ?     THEN  1
+         ELSE -1
+       END AS lang_score,
 
        -- 열거적 필드: 빈 태그가 값 "none"이므로 중립인 경우가 없다
        CASE
@@ -153,7 +177,8 @@ SELECT id, file, title, artist, bpm,
        END AS season_score
 
 FROM songs
-ORDER BY event_score  DESC,
+ORDER BY lang_score   DESC,
+         event_score  DESC,
          precip_score DESC,
          place_score  DESC,
          time_score   DESC,
@@ -162,11 +187,11 @@ ORDER BY event_score  DESC,
          title;
 ```
 
-- 인자는 여덟 개, 순서는 이렇다. `time`, `season`은 `NULL` 분기에 파라미터가
-  없어서 한 번만 쓴다.
+- 인자는 아홉 개, 순서는 이렇다. `lang`은 한 번, `time`과 `season`은 `NULL`
+  분기에 파라미터가 없어서 한 번만 쓴다.
 
   ```
-  event, event, precip, precip, place, place, time, season
+  lang, event, event, precip, precip, place, place, time, season
   ```
 
 - 정렬 방향은 파라미터로 넣을 수 없다. `ORDER BY bpm ?`는 문법 오류다.
@@ -180,13 +205,14 @@ ORDER BY event_score  DESC,
 
 ### CarState
 
-상태는 여섯 개 필드이고 전부 **소문자 문자열**로 주고받는다. enum은 쓰지
-않는다. 값이 날씨 피드·시계·달력에서 오는 문자열이고, `tags.db`에도 같은
-문자열로 저장되며, SQL에 그대로 바인딩되기 때문이다. enum을 쓰면 양쪽으로
+상태는 일곱 개 필드이고 전부 **소문자 문자열**로 주고받는다. enum은 쓰지
+않는다. 값이 날씨 피드·시계·달력·사용자 설정에서 오는 문자열이고, `tags.db`에도
+같은 문자열로 저장되며, SQL에 그대로 바인딩되기 때문이다. enum을 쓰면 양쪽으로
 변환 코드가 붙는데 얻는 것이 없다.
 
 ```kotlin
 data class CarState(
+    val lang:   String,   // "ko" | "en" | "ja"
     val event:  String,   // "none" | "christmas"
     val precip: String,   // "none" | "rain" | "snow"
     val place:  String,   // "none" | "mountain" | "sea" | "river" | "city"
@@ -198,6 +224,7 @@ data class CarState(
 
 | 필드 | 출처 |
 | --- | --- |
+| `lang` | 사용자 언어 설정. `ko`, `en`, `ja` |
 | `event` | 날짜. 12월 25일이면 `christmas`, 아니면 `none` |
 | `precip` | 날씨 피드. 비 `rain`, 눈 `snow`, 그 외 `none` |
 | `place` | GPS/내비. 특정 장소가 없으면 `none` |
@@ -234,6 +261,9 @@ fun openTagsDb(context: Context): SQLiteDatabase {
 
 ```kotlin
 private val SCORES = """
+    CASE WHEN lang IS NULL THEN 0
+         WHEN lang = ? THEN 1
+         ELSE -1 END AS lang_score,
     CASE WHEN event IS NULL AND ? = 'none' THEN 1
          WHEN event IS NOT NULL AND (',' || event || ',') LIKE ('%,' || ? || ',%') THEN 1
          ELSE -1 END AS event_score,
@@ -265,7 +295,8 @@ fun rank(db: SQLiteDatabase, state: CarState): List<Song> {
         SELECT id, file, title, artist, bpm,
                $SCORES
         FROM songs
-        ORDER BY event_score  DESC,
+        ORDER BY lang_score   DESC,
+                 event_score  DESC,
                  precip_score DESC,
                  place_score  DESC,
                  time_score   DESC,
@@ -275,6 +306,7 @@ fun rank(db: SQLiteDatabase, state: CarState): List<Song> {
     """.trimIndent()
 
     val args = arrayOf(
+        state.lang,
         state.event, state.event,
         state.precip, state.precip,
         state.place, state.place,
