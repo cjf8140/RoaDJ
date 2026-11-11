@@ -178,6 +178,39 @@ ORDER BY event_score  DESC,
 
 ## AAOS Kotlin 예제
 
+### CarState
+
+상태는 여섯 개 필드이고 전부 **소문자 문자열**로 주고받는다. enum은 쓰지
+않는다. 값이 날씨 피드·시계·달력에서 오는 문자열이고, `tags.db`에도 같은
+문자열로 저장되며, SQL에 그대로 바인딩되기 때문이다. enum을 쓰면 양쪽으로
+변환 코드가 붙는데 얻는 것이 없다.
+
+```kotlin
+data class CarState(
+    val event:  String,   // "none" | "christmas"
+    val precip: String,   // "none" | "rain" | "snow"
+    val place:  String,   // "none" | "mountain" | "sea" | "river" | "city"
+    val time:   String,   // "day" | "night"
+    val season: String,   // "spring" | "summer" | "autumn" | "winter"
+    val mood:   String,   // "happy" | "calm"
+)
+```
+
+| 필드 | 출처 |
+| --- | --- |
+| `event` | 날짜. 12월 25일이면 `christmas`, 아니면 `none` |
+| `precip` | 날씨 피드. 비 `rain`, 눈 `snow`, 그 외 `none` |
+| `place` | GPS/내비. 특정 장소가 없으면 `none` |
+| `time` | 시계. 낮 `day`, 밤 `night` |
+| `season` | 월. 3–5 `spring`, 6–8 `summer`, 9–11 `autumn`, 12–2 `winter` |
+| `mood` | 앱의 분위기 판정 |
+
+목표 bpm, 가중치, mood 임계값은 넣지 않는다. 규칙은 `mood`를 정렬 방향으로만
+쓰고 나머지는 SQL이 계산한다. 요청값은 항상 하나다. 여러 값이 붙는 것은 곡
+쪽 태그뿐이다.
+
+### DB 열기
+
 `tags.db`를 `app/src/main/assets/tags.db`에 넣고, 첫 실행 때 앱 DB 경로로
 복사해서 연다.
 
@@ -227,7 +260,7 @@ data class Song(
 )
 
 fun rank(db: SQLiteDatabase, state: CarState): List<Song> {
-    val dir = if (state.mood == Mood.HAPPY) "DESC" else "ASC"
+    val dir = if (state.mood == "happy") "DESC" else "ASC"
     val sql = """
         SELECT id, file, title, artist, bpm,
                $SCORES
