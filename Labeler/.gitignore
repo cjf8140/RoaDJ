@@ -4,6 +4,7 @@ tools/
 lyrics.json
 tags.json
 tags.db
+rank_test.html
 
 # Secrets
 .env
