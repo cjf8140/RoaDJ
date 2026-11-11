@@ -133,7 +133,10 @@ WHERE ',' || precip || ',' LIKE '%,rain,%'
 ```
 
 Wrap the column in commas in the `LIKE` pattern so `rain` cannot match a future
-value such as `rainy`. `NULL` means "no tag" and drops out of every match.
+value such as `rainy`. `NULL` means the song has no tag for that field, and how
+to read it depends on the field: for `event`, `place` and `precip` it is the
+value `none` (no event, no particular place, clear weather); for `time` and
+`season` it means unknown.
 
 `tags.db` is gitignored. Delete it to force a rebuild, or copy it to another
 service as the shared dataset.

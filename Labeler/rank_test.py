@@ -1,8 +1,12 @@
 """Build rank_test.html from tags.db so the ranking order can be eyeballed.
 
 Priority is fixed top to bottom and the order is lexicographic: the first
-category where two songs differ decides. A category left at "-" has no effect,
-so an unspecified field needs no special handling.
+category where two songs differ decides. Every category always has a value,
+because the car always sends one.
+
+For event, place and precip a missing tag means "none" (a real value), so those
+fields compare as none/<value>. For time and season a missing tag means
+"unknown" and scores 0 against any request.
 
     py -3 rank_test.py
 """
@@ -41,8 +45,9 @@ TEMPLATE = """<!doctype html>
 </head>
 <body>
 <h1>Ranking test</h1>
-<p class="hint">Top to bottom is priority. +1 = tag matches, 0 = song has no tag
-for that field, -1 = song has a different tag. Unspecified category ("-") is skipped.</p>
+<p class="hint">Top to bottom is priority; the first category where two songs differ decides.
++1 = match, -1 = different value, 0 = the song says nothing.
+For event, place and precip a missing tag is the value "none"; for time and season it is unknown.</p>
 <table id="controls"><tbody></tbody></table>
 <p id="summary"></p>
 <table id="result"><thead></thead><tbody></tbody></table>
@@ -50,15 +55,18 @@ for that field, -1 = song has a different tag. Unspecified category ("-") is ski
 const SONGS = __SONGS__;
 
 const FIELDS = [
-  { key: "event",  values: ["christmas"] },
-  { key: "precip", values: ["rain", "snow"] },
-  { key: "place",  values: ["mountain", "sea", "river", "city"] },
+  { key: "event",  values: ["none", "christmas"], exhaustive: true },
+  { key: "precip", values: ["none", "rain", "snow"], exhaustive: true },
+  { key: "place",  values: ["none", "mountain", "sea", "river", "city"], exhaustive: true },
   { key: "time",   values: ["day", "night"] },
   { key: "mood",   values: ["happy", "calm"] },
   { key: "season", values: ["spring", "summer", "autumn", "winter"] },
 ];
 
-const state = { moodCut: 120 };
+const state = {
+  event: "none", precip: "none", place: "none",
+  time: "night", mood: "calm", season: "winter", moodCut: 120,
+};
 const esc = s => String(s).replace(/[&<>"]/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -69,29 +77,34 @@ const summary = document.querySelector("#summary");
 
 function scoreOf(song, key) {
   const req = state[key];
-  if (!req) return 0;
   if (key === "mood") {
     if (song.bpm == null) return 0;
     return ((song.bpm >= state.moodCut) === (req === "happy")) ? 1 : -1;
   }
   const have = song[key] || [];
-  if (have.length === 0) return 0;
+  const absentIsValue = FIELDS.find(f => f.key === key).exhaustive;
+  if (have.length === 0) {
+    if (!absentIsValue) return 0;            // time, season: unknown
+    return req === "none" ? 1 : -1;          // event, place, precip: absence is a value
+  }
   if (req === "none") return -1;
   return have.includes(req) ? 1 : -1;
 }
-
-function active() { return FIELDS.filter(f => state[f.key]); }
 
 function buildControls() {
   controls.innerHTML = "";
   FIELDS.forEach((f, i) => {
     const tr = document.createElement("tr");
-    const opts = ['<option value="">-</option>']
-      .concat(f.values.map(v => `<option value="${v}">${v}</option>`))
-      .concat(f.key === "mood" ? [] : ['<option value="none">none</option>'])
-      .join("");
+    const opts = f.values.map(v => `<option value="${v}">${v}</option>`).join("");
     tr.innerHTML = `<td class="num">${i + 1}</td><td>${f.key}</td>`
       + `<td><select data-key="${f.key}">${opts}</select></td><td class="tags"></td>`;
+    const sel = tr.querySelector("select");
+    sel.value = state[f.key];
+    sel.addEventListener("change", e => {
+      state[e.target.dataset.key] = e.target.value;
+      render();
+    });
+
     const note = tr.lastElementChild;
     if (f.key === "mood") {
       note.innerHTML = 'happy = bpm &ge; <input type="number" id="cut" value="120" step="1" style="width:64px">';
@@ -101,18 +114,15 @@ function buildControls() {
       });
     } else {
       const tagged = SONGS.filter(s => (s[f.key] || []).length).length;
-      note.textContent = `${tagged}/${SONGS.length} songs tagged`;
+      note.textContent = `${tagged}/${SONGS.length} tagged, empty = `
+        + (f.exhaustive ? "none" : "unknown");
     }
-    tr.querySelector("select").addEventListener("change", e => {
-      state[e.target.dataset.key] = e.target.value;
-      render();
-    });
     controls.appendChild(tr);
   });
 }
 
 function render() {
-  const act = active();
+  const act = FIELDS;
   const rows = SONGS.slice().sort((a, b) => {
     for (const f of act) {
       const d = scoreOf(b, f.key) - scoreOf(a, f.key);
@@ -131,8 +141,8 @@ function render() {
       const v = scoreOf(s, f.key);
       const cls = v > 0 ? "pos" : v < 0 ? "neg" : "zero";
       const shown = f.key === "mood"
-        ? (s.bpm == null ? "-" : s.bpm)
-        : ((s[f.key] || []).join(",") || "-");
+        ? (s.bpm == null ? "?" : s.bpm)
+        : ((s[f.key] || []).join(",") || (f.exhaustive ? "none" : "?"));
       return `<td class="num ${cls}">${shown} <span class="tags">${v > 0 ? "+1" : v < 0 ? "-1" : "0"}</span></td>`;
     }).join("");
     const all = FIELDS.filter(f => f.key !== "mood")
@@ -143,9 +153,8 @@ function render() {
       + `${cells}<td class="tags">${all || "-"}</td></tr>`;
   }).join("");
 
-  summary.textContent = act.length
-    ? "ORDER BY " + act.map(f => f.key + " DESC").join(", ") + ", title"
-    : "No category selected. Sorted by title.";
+  summary.textContent = "ORDER BY "
+    + act.map(f => f.key + " DESC").join(", ") + ", title";
 }
 
 buildControls();
