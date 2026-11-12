@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>위치 판별 테스트 — Nominatim vs Overpass</title>
+<style>
+  body{font:14px/1.5 system-ui,sans-serif;margin:0;padding:24px;max-width:920px;background:#111;color:#ddd}
+  h1{font-size:18px;margin:0 0 4px}
+  p.hint{color:#888;font-size:12px;margin:0 0 16px}
+  form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  label{display:flex;flex-direction:column;font-size:11px;color:#999}
+  input{width:120px;background:#1c1c1c;border:1px solid #333;color:#eee;padding:6px;font:inherit}
+  button{background:#2d6cdf;border:0;color:#fff;padding:8px 18px;cursor:pointer;align-self:end;font:inherit}
+  button:disabled{opacity:.5;cursor:default}
+  .verdict{font-size:22px;font-weight:700;margin:12px 0 4px}
+  .rule{color:#888;font-size:12px;margin-bottom:12px}
+  table{border-collapse:collapse;width:100%;font-size:12px;margin:8px 0}
+  td,th{border-bottom:1px solid #262626;padding:4px 6px;text-align:left;vertical-align:top}
+  th{color:#888;font-weight:500}
+  .muted{color:#777}
+  .err{color:#e5534b}
+  pre{white-space:pre-wrap;word-break:break-all;font:12px/1.4 ui-monospace,monospace;background:#181818;padding:10px;max-height:340px;overflow:auto}
+  summary{cursor:pointer;color:#888;font-size:12px;margin-top:12px}
+</style>
+</head>
+<body>
+<h1>위치 판별 테스트</h1>
+<p class="hint">Overpass = 판정 주력(is_in 포함 + around 근접). Nominatim = 주소/도시명 보조. 기본값은 서울시청.</p>
+
+<form id="f">
+  <label>위도<input name="lat" value="37.5665" required></label>
+  <label>경도<input name="lon" value="126.9780" required></label>
+  <label>주변 반경 m<input name="r" value="400" required></label>
+  <label>Overpass 엔드포인트<input name="ep" value="https://overpass.openstreetmap.fr/api/interpreter" style="width:300px"></label>
+  <button id="go">조회</button>
+</form>
+
+<div class="verdict" id="verdict">—</div>
+<div class="rule" id="rule"></div>
+<table id="cats"></table>
+
+<details><summary>Overpass 결과 (태그 원본)</summary><pre id="ovp" class="muted"></pre></details>
+<details><summary>Nominatim 결과 (raw)</summary><pre id="nom" class="muted"></pre></details>
+
+<script>
+const $ = s => document.querySelector(s);
+const NOM = 'https://nominatim.openstreetmap.org/reverse';
+
+// is_in = 점을 포함하는 폴리곤(행정구역·수계·토지용도). around = 선형/점형 feature(봉우리·해안선·하천선).
+// shortcut: 포함 판정은 OSM 폴리곤 품질에 의존. 해외/해안 경계는 비어 있을 수 있음.
+const qArea = (lat, lon) => `[out:json][timeout:25];is_in(${lat},${lon});out tags 80;`;
+// 선형 feature는 중심이 멀어서 center 거리로는 못 잡음. bbox로 형상을 잘라 최근접 노드까지 거리 계산.
+const qNear = (lat, lon, r) => {
+  const dLat = (Math.max(r, 1500) + 100) / 111320, dLon = dLat / Math.cos(rad(lat));
+  const bbox = [lat - dLat, lon - dLon, lat + dLat, lon + dLon].map(x => x.toFixed(5)).join(',');
+  return `[out:json][timeout:25];
+(
+  node(around:${r},${lat},${lon})[natural~"^(peak|ridge|cliff|volcano|hill)$"];
+  way(around:${r},${lat},${lon})[waterway];
+  way(around:1500,${lat},${lon})[natural=coastline];
+);
+out tags geom(${bbox}) 80;`;
+};
+
+// 카테고리 순서 = 판정 우선순위. 위에서 먼저 걸리면 그게 답.
+const CATS = [
+  ['바다',   /^(natural=(coastline|bay)|place=(sea|ocean))/],
+  ['강·물', /^(natural=(water|wetland|spring)|waterway=|landuse=(reservoir|basin))/],
+  ['산',     /^(natural=(peak|ridge|cliff|volcano|hill)|landuse=quarry)/],
+  ['도시',   /^(place=|boundary=administrative|landuse=(residential|commercial|industrial|retail|construction))/],
+];
+
+const R_EARTH = 6371000;
+const rad = d => d * Math.PI / 180;
+function dist(a, b, c, d) {
+  const dLat = rad(c - a), dLon = rad(d - b);
+  const h = Math.sin(dLat/2)**2 + Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(dLon/2)**2;
+  return 2 * R_EARTH * Math.asin(Math.sqrt(h));
+}
+
+async function get(url, opt = {}, ms = 25000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, { ...opt, signal: ctl.signal }); }
+  finally { clearTimeout(t); }
+}
+
+$('#f').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const lat = +ev.target.lat.value, lon = +ev.target.lon.value, r = +ev.target.r.value;
+  const ep = ev.target.ep.value.trim();
+  const btn = $('#go');
+  btn.disabled = true;
+  $('#verdict').textContent = '…';
+  $('#rule').textContent = '';
+  $('#cats').innerHTML = '';
+  $('#ovp').textContent = '';
+  $('#nom').textContent = '';
+
+  const ovp = q => get(ep, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'data=' + encodeURIComponent(q),
+  }).then(x => x.ok ? x.json() : x.text().then(t => { throw new Error('Overpass ' + x.status + ': ' + t.slice(0, 160)); }));
+
+  // 두 쿼리를 동시에 보내면 같은 IP로 큐잉돼 둘 다 타임아웃. 순차 실행 + 1회 재시도.
+  const settle = p => p.then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason }));
+  const once = async q => {
+    const r = await settle(ovp(q));
+    return r.status === 'fulfilled' && r.value.elements?.length ? r : settle(ovp(q));
+  };
+  const areaR = await once(qArea(lat, lon));
+  const nearR = await once(qNear(lat, lon, r));
+  const nom = await settle(
+    get(`${NOM}?format=jsonv2&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1&accept-language=ko`)
+      .then(x => x.ok ? x.json() : x.text().then(t => { throw new Error('Nominatim ' + x.status + ': ' + t.slice(0, 200)); })),
+  );
+
+  const els = [];
+  const add = (e, contains) => {
+    if (!e.tags) return;
+    // 지하 암거/터널 하천은 지표 판정에서 제외
+    if (e.tags.waterway && (e.tags.tunnel || e.tags.covered || e.tags.layer === '-1')) return;
+    // 선형 feature(하천·해안선)는 중심이 아니라 형상 최근접점까지 거리로 판정
+    // geom(bbox)는 bbox 밖 노드를 null로 주므로 걸러야 함
+    const pts = (e.geometry || (e.lat != null ? [{ lon: e.lon, lat: e.lat }] : []))
+      .filter(p => p && p.lon != null);
+    els.push({
+      kv: Object.entries(e.tags).map(([k, v]) => k + '=' + v),
+      name: e.tags['name:ko'] || e.tags.name || '',
+      contains,
+      dist: contains ? 0 : (pts.length ? Math.round(Math.min(...pts.map(p => dist(lat, lon, p.lat, p.lon)))) : Infinity),
+    });
+  };
+  const ovpEls = [...(areaR.value?.elements || []), ...(nearR.value?.elements || [])];
+  ovpEls.forEach((e, i) => add(e, i < (areaR.value?.elements || []).length));
+
+  const ovpErr = [areaR, nearR].filter(x => x.status !== 'fulfilled').map(x => x.reason.message);
+  $('#ovp').textContent = JSON.stringify(ovpEls.map(e => ({ type: e.type, id: e.id, tags: e.tags })), null, 1) +
+    (ovpErr.length ? '\n오류: ' + ovpErr.join(' / ') + '\n서버 혼잡이면 재시도하거나 위 입력에서 미러로 변경.'
+      : ovpEls.length ? '' : '\n결과 0건. 이 인스턴스에 해당 지역 데이터가 없거나(osm.ch는 스위스만) 요청이 조용히 실패함.');
+
+  // Overpass 불가 시 Photon(같은 OSM 데이터)으로 대체. 근접 기반이라 포함 판정 못 함.
+  // shortcut: Photon은 점 포함 여부를 안 알려줌. 앱 본구현은 Overpass is_in 유지.
+  let src = 'Overpass';
+  if (!els.length) {
+    src = 'Photon 대체';
+    try {
+      const ph = await get(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lon}&limit=20`).then(x => x.json());
+      $('#ovp').textContent += '\n--- Photon ---\n' + JSON.stringify((ph.features || []).map(f => f.properties), null, 1);
+      for (const f of ph.features || []) {
+        const p = f.properties, c = f.geometry?.coordinates;
+        if (!p.osm_key) continue;
+        els.push({
+          tags: p,
+          kv: [p.osm_key + '=' + p.osm_value],
+          name: p.name || p.city || '',
+          dist: c ? Math.round(dist(lat, lon, c[1], c[0])) : 0,
+        });
+      }
+    } catch (e) { $('#ovp').textContent += '\nPhoton 실패: ' + e.message; }
+  }
+
+  const n = nom.status === 'fulfilled' && !nom.value.error ? nom.value : null;
+  if (n) {
+    $('#nom').textContent = JSON.stringify(n, null, 1);
+  } else {
+    $('#nom').innerHTML = '<span class="err">' + (nom.value?.error || nom.reason?.message || '응답 없음') + '</span>';
+  }
+
+  // 카테고리별 최근접 거리
+  const rows = CATS.map(([label, re]) => {
+    const hits = els.filter(e => e.kv.some(kv => re.test(kv))).sort((a, b) => a.dist - b.dist);
+    return { label, hits, min: hits.length ? hits[0].dist : null, contains: hits.some(h => h.contains) };
+  });
+
+  $('#cats').innerHTML = '<tr><th>카테고리</th><th>개수</th><th>근거</th><th>이름</th></tr>' +
+    rows.map(r => `<tr><td>${r.label}</td><td>${r.hits.length}</td><td>${
+      r.contains ? '포함' : (r.min ?? '—')
+    }</td><td>${
+      r.hits.slice(0, 3).map(h => h.name || h.kv.join(' ')).join(' / ') || '<span class=muted>없음</span>'
+    }</td></tr>`).join('');
+
+  // 판정: 카테고리별 허용 거리 우선순위(바다 > 강·물 > 산 > 도시). 도시는 폴리곤 포함만 인정.
+  // shortcut: 물은 수계 폴리곤 포함 또는 하천선 30m 이내만 인정. 하천 폭/데이터 품질에 따라 빗나감.
+  const addr = n?.address || {};
+  const noAddress = !n || !Object.keys(addr).length;
+  const LIMIT = { '바다': -1, '강·물': r, '산': r, '도시': 0 };
+  const pick = rows.find(row => row.hits.length && (row.contains || row.min <= LIMIT[row.label]));
+  let verdict = pick?.label;
+  let why = pick ? `최근접 ${pick.hits[0].name || pick.hits[0].kv.join(' ')} (${pick.min}m)` : '매칭 feature 없음';
+
+  if (!verdict && noAddress && rows[0].hits.length) { verdict = '바다'; why = '해안선 근접 + 주소 없음'; }
+  if (!verdict && n) { verdict = '도시'; why = '주소만 존재: ' + (n.display_name || ''); }
+  if (!verdict) { verdict = '미상'; why = '두 API 모두 판정 불가 (바다/해외 추정)'; }
+
+  $('#verdict').innerHTML = verdict + ' <span class="muted" style="font-size:13px;font-weight:400">' +
+    (n?.display_name || '') + '</span>';
+  $('#rule').textContent = '판정 근거(' + src + '): ' + why;
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>
