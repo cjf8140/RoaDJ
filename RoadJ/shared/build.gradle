@@ -1,0 +1,25 @@
+plugins {
+    id 'com.android.library'
+}
+android {
+    namespace 'com.tikitacar.roadj.shared'
+    compileSdk 37
+
+    defaultConfig {
+        minSdk 28
+        targetSdk 37
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    // shared/assets 의 mp3 를 압축하지 않아 MediaPlayer 가 파일 디스크립터로 바로 열 수 있게 합니다.
+    androidResources {
+        noCompress 'mp3'
+    }
+}
+dependencies {
+    implementation libs.androidx.media
+}

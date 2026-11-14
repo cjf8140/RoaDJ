@@ -1,0 +1,5 @@
+<resources>
+
+    <!-- AppCompatActivity 사용을 위해 AppCompat 기반 테마 필요 -->
+    <style name="Theme.RoadJ" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>
