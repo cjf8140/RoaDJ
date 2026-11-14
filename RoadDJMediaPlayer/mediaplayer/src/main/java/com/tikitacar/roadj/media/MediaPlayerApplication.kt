@@ -9,9 +9,14 @@ import com.tikitacar.roadj.PlaybackController
  */
 class MediaPlayerApplication : Application() {
 
+    /** 앱 프로세스 수명 동안 유지되는 MediaSession (커스텀 화면/템플릿 공용) */
+    lateinit var mediaSessionController: MediaSessionController
+        private set
+
     override fun onCreate() {
         super.onCreate()
         PlaybackController.initialize(this)
         DrivingDataCollector.start(this)
+        mediaSessionController = MediaSessionController(this)
     }
 }

@@ -1,6 +1,8 @@
 package com.tikitacar.roadj.media
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -15,10 +17,7 @@ import com.tikitacar.roadj.PlaybackController
  * [PlaybackController] 의 재생 상태를 MediaSession 으로 노출해
  * MediaPlaybackTemplate/시스템 미디어 컨트롤이 제어할 수 있게 합니다.
  */
-class MediaSessionController(
-    context: Context,
-    private val onFirstPlay: (() -> Unit)? = null
-) {
+class MediaSessionController(context: Context) {
 
     companion object {
         private const val TAG = "RoadDJMediaSession"
@@ -33,7 +32,14 @@ class MediaSessionController(
             PlaybackStateCompat.ACTION_SEEK_TO
     }
 
+    /** 첫 재생 시 1회 호출됩니다. (차량 속도 권한 요청 등) */
+    var onFirstPlay: (() -> Unit)? = null
+
+    private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** 곡별 커버가 없을 때 항상 사용하는 기본 RoaDJ 앨범 커버 */
+    private val defaultAlbumArt: Bitmap? = loadDefaultAlbumArt()
 
     val session: MediaSessionCompat = MediaSessionCompat(context, "RoadDJMediaSession").apply {
         setFlags(
@@ -93,7 +99,7 @@ class MediaSessionController(
         session.setCallback(callback, mainHandler)
         publish(forceMetadata = true)
         mainHandler.post(ticker)
-        Log.d(TAG, "MediaSession 생성")
+        Log.d(TAG, "MediaSession 생성 (기본 커버=${defaultAlbumArt != null})")
     }
 
     fun release() {
@@ -102,27 +108,60 @@ class MediaSessionController(
         Log.d(TAG, "MediaSession 해제")
     }
 
+    private fun loadDefaultAlbumArt(): Bitmap? =
+        runCatching {
+            BitmapFactory.decodeResource(
+                appContext.resources,
+                R.drawable.ic_roadj_cover
+            )
+        }.onFailure {
+            Log.w(TAG, "기본 앨범 커버 로드 실패", it)
+        }.getOrNull()
+
+    /**
+     * 가수명 뒤에 현재 주행 무드 태그를 붙입니다.
+     * 예: "어반 자카파 • #야간주행"
+     */
+    private fun buildDisplayArtist(baseArtist: String): String =
+        MediaDisplay.artistWithMoodTag(baseArtist)
+
     private fun publish(forceMetadata: Boolean) {
         val state = PlaybackController.state()
+        val displayArtist = buildDisplayArtist(state.artist)
+        val durationMs = if (state.durationMs > 0L) {
+            state.durationMs
+        } else {
+            MediaDisplay.DEFAULT_DURATION_MS
+        }
 
         if (forceMetadata ||
             lastTitle != state.songTitle ||
-            lastArtist != state.artist ||
-            lastDuration != state.durationMs
+            lastArtist != displayArtist ||
+            lastDuration != durationMs
         ) {
-            session.setMetadata(
-                MediaMetadataCompat.Builder()
-                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, state.songTitle)
-                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, state.artist)
-                    .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, "RoadDJ media player")
-                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, state.durationMs)
-                    .putLong(MediaMetadataCompat.METADATA_KEY_TRACK_NUMBER, state.position.toLong())
-                    .putLong(MediaMetadataCompat.METADATA_KEY_NUM_TRACKS, state.total.toLong())
-                    .build()
-            )
+            val metadataBuilder = MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, state.songTitle)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, displayArtist)
+                .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, "RoaDJ")
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs)
+                .putLong(MediaMetadataCompat.METADATA_KEY_TRACK_NUMBER, state.position.toLong())
+                .putLong(MediaMetadataCompat.METADATA_KEY_NUM_TRACKS, state.total.toLong())
+
+            // 곡에 별도 커버가 없으므로 항상 기본 RoaDJ 로고를 넣습니다.
+            defaultAlbumArt?.let { bitmap ->
+                metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+            }
+
+            session.setMetadata(metadataBuilder.build())
             lastTitle = state.songTitle
-            lastArtist = state.artist
-            lastDuration = state.durationMs
+            lastArtist = displayArtist
+            lastDuration = durationMs
+
+            Log.d(
+                TAG,
+                "메타데이터 갱신: title=${state.songTitle}, artist=$displayArtist, " +
+                    "duration=${durationMs}ms, albumArt=${defaultAlbumArt != null}"
+            )
         }
 
         val playbackState = when {

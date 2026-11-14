@@ -22,6 +22,9 @@ object PlaybackController {
     private const val TAG = "RoadJPlayback"
     private const val PROGRESS_TICK_MS = 1_000L
 
+    /** 곡이 끝나기 몇 ms 전에 다음 곡을 미리 선택할지 */
+    private const val NEXT_PREPARE_BEFORE_END_MS = 3_000L
+
     /** 사용자가 선택한 곡 언어(ko/en/ja) 저장 키 */
     private const val PREFS_NAME = "roadj_settings"
     private const val KEY_RANKING_LANG = "ranking_lang"
@@ -57,10 +60,18 @@ object PlaybackController {
 
     private var playlistGeneration = 0
 
+    /** 한 번이라도 실제 재생이 시작된 곡 (다음 곡 선택에서 제외) */
+    private val playedFiles = LinkedHashSet<String>()
+
+    /** 현재 곡의 종료 3초 전에 다음 순서를 갱신했는지 여부 */
+    private var nextOrderPrepared = false
+
     private val progressTicker = object : Runnable {
         override fun run() {
             // 시계/달력이 바뀌면(낮↔밤, 계절, 크리스마스) 순위도 자동 갱신합니다.
             refreshClockState()
+            // 곡 종료 3초 전이면 최신 상태로 다음 곡을 미리 선택합니다.
+            maybePrepareNextTrack()
             mainHandler.postDelayed(this, PROGRESS_TICK_MS)
         }
     }
@@ -82,9 +93,14 @@ object PlaybackController {
                 season = currentSeasonCode()
             )
 
-            player = LocalAudioPlayer(app) { state ->
-                listeners.forEach { runCatching { it(state) } }
-            }
+            player = LocalAudioPlayer(
+                app,
+                onStateChanged = { state ->
+                    listeners.forEach { runCatching { it(state) } }
+                },
+                onTrackStarted = { fileName -> onTrackStarted(fileName) },
+                onTrackCompleted = { onTrackCompleted() }
+            )
 
             initialized = true
             refreshPlaylist("초기화")
@@ -123,12 +139,53 @@ object PlaybackController {
         player?.pause()
     }
 
+    /**
+     * 다음 곡을 선택합니다. (수동 다음 곡)
+     * 선택 시점의 CarState 로 RANKING 을 다시 계산하고, 아직 재생하지 않은 곡 중
+     * 가장 우선순위가 높은 곡을 재생합니다.
+     */
     fun next() {
-        player?.next()
+        nextOrderPrepared = false
+        val context = appContext
+        val localPlayer = player
+        if (context == null || localPlayer == null) return
+
+        val playlist = buildPlaylist(context, carState)
+        if (playlist.isEmpty()) {
+            localPlayer.next()
+            return
+        }
+
+        val currentFile = localPlayer.currentFileName()
+        val candidate = playlist.firstOrNull { it !in playedFiles && it != currentFile }
+        if (candidate == null) {
+            Log.d(
+                TAG,
+                "다음 곡 없음 → 모든 곡 재생 완료 (${playedFiles.size}/${playlist.size})"
+            )
+            localPlayer.pause()
+            return
+        }
+
+        localPlayer.setPlaylist(playlist, "다음 곡 선택")
+        Log.d(
+            TAG,
+            "다음 곡 선택(수동): ${candidate.substringBeforeLast('.')} · " +
+                "${carStateLog(carState)} · 재생한 곡 ${playedFiles.size}/${playlist.size}"
+        )
+        localPlayer.playFile(candidate)
     }
 
     fun previous() {
+        nextOrderPrepared = false
         player?.previous()
+    }
+
+    /** 재생 목록/다음 곡 목록에서 특정 곡을 선택해 바로 재생합니다. */
+    fun playSelected(fileName: String) {
+        if (fileName.isBlank()) return
+        nextOrderPrepared = false
+        player?.playFile(fileName)
     }
 
     /** 재생 위치 이동 (밀리초). MediaSession/시크바에서 호출. */
@@ -137,6 +194,26 @@ object PlaybackController {
     }
 
     fun carState(): CarState = carState
+
+    /** 현재 재생 중인 곡의 파일명 (태그 표시용) */
+    fun currentFile(): String? = player?.currentFileName()
+
+    /** 지금까지 실제로 재생을 시작한 곡 수 */
+    fun playedCount(): Int = playedFiles.size
+
+    /**
+     * 현재 순위 순서에서 아직 재생하지 않은 곡을 앞에서부터 반환합니다.
+     * (다음 곡 미리보기/재생 목록 UI 용)
+     */
+    fun upcomingFiles(limit: Int): List<String> {
+        val localPlayer = player ?: return emptyList()
+        val currentFile = localPlayer.currentFileName()
+        return localPlayer.playlist()
+            .asSequence()
+            .filter { it != currentFile && it !in playedFiles }
+            .take(limit)
+            .toList()
+    }
 
     /** 날씨/주변/시계 등 상태가 실제로 바뀐 경우에만 순위를 다시 계산합니다. */
     fun updateCarState(transform: (CarState) -> CarState) {
@@ -237,6 +314,136 @@ object PlaybackController {
         return if (hour in 6..17) "day" else "night"
     }
 
+    /** 실제 재생이 시작된 곡을 기록합니다. (다음 곡 선택에서 제외) */
+    private fun onTrackStarted(fileName: String) {
+        val added = playedFiles.add(fileName)
+        nextOrderPrepared = false
+        if (added) {
+            Log.d(
+                TAG,
+                "재생 이력 추가: ${fileName.substringBeforeLast('.')} (${playedFiles.size}곡 재생)"
+            )
+        }
+    }
+
+    /**
+     * 곡이 끝났을 때, 3초 전에 갱신해 둔 순서에서 아직 재생하지 않은 첫 곡을 재생합니다.
+     * 3초 전 갱신이 없었다면 종료 시점에 최신 상태로 순서를 갱신합니다.
+     */
+    private fun onTrackCompleted() {
+        val localPlayer = player ?: return
+        val hadPreparedOrder = nextOrderPrepared
+        nextOrderPrepared = false
+
+        if (hadPreparedOrder && localPlayer.playNextUnplayed(playedFiles)) {
+            Log.d(
+                TAG,
+                "곡 종료 → 3초 전에 갱신한 순서로 다음 곡 재생: " +
+                    (localPlayer.currentFileName()?.substringBeforeLast('.') ?: "-")
+            )
+            return
+        }
+
+        // 3초 전 갱신이 없었거나, 순서상 남은 미재생 곡이 없으면 종료 시점에 최신 상태로 갱신합니다.
+        val context = appContext
+        if (context == null) {
+            localPlayer.pause()
+            return
+        }
+        val playlist = buildPlaylist(context, carState)
+        if (playlist.isEmpty()) {
+            localPlayer.pause()
+            return
+        }
+        localPlayer.setPlaylist(playlist, "곡 종료")
+        if (localPlayer.playNextUnplayed(playedFiles)) {
+            Log.d(
+                TAG,
+                "곡 종료 → 최신 순서로 다음 곡 재생: " +
+                    (localPlayer.currentFileName()?.substringBeforeLast('.') ?: "-") +
+                    " · ${carStateLog(carState)} · 재생한 곡 ${playedFiles.size}/${playlist.size}"
+            )
+        } else {
+            Log.d(
+                TAG,
+                "곡 종료 → 재생할 새 곡 없음 (모든 곡 재생 완료 ${playedFiles.size}/${playlist.size})"
+            )
+            localPlayer.pause()
+        }
+    }
+
+    /**
+     * 곡 종료 3초 전이면 최신 환경 기준으로 다음 순서를 다시 설정합니다.
+     * 여기서는 순서만 갱신하며, 곡을 미리 재생하거나 현재 곡을 바꾸지 않습니다.
+     */
+    private fun maybePrepareNextTrack() {
+        val localPlayer = player ?: return
+        val state = localPlayer.state()
+        if (state.durationMs <= 0L) return
+
+        val remaining = state.durationMs - state.positionMs
+
+        // 시크 등으로 남은 시간이 다시 3초보다 커지면 다음 종료 시점에 다시 갱신하도록 초기화합니다.
+        if (nextOrderPrepared && remaining > NEXT_PREPARE_BEFORE_END_MS) {
+            nextOrderPrepared = false
+        }
+
+        if (state.playing &&
+            remaining in 1L..NEXT_PREPARE_BEFORE_END_MS &&
+            !nextOrderPrepared
+        ) {
+            refreshNextOrder("곡 종료 3초 전")
+        }
+    }
+
+    /**
+     * 현재 CarState 로 RANKING 순서를 다시 계산해 재생 목록에 반영합니다.
+     * 현재 곡은 그대로 재생되며, 다음 곡을 미리 재생하지는 않습니다.
+     */
+    private fun refreshNextOrder(reason: String) {
+        if (nextOrderPrepared) return
+        val context = appContext ?: return
+        val localPlayer = player ?: return
+
+        val state = carState
+        val playlist = buildPlaylist(context, state)
+        if (playlist.isEmpty()) return
+
+        // 현재 곡은 유지한 채 순서만 갱신합니다.
+        localPlayer.setPlaylist(playlist, reason)
+        nextOrderPrepared = true
+
+        val head = playlist.take(5).mapIndexed { index, file ->
+            "${index + 1}. ${file.substringBeforeLast('.')}"
+        }
+        Log.d(
+            TAG,
+            "다음 순서 갱신(3초 전): ${playlist.size}곡 · ${carStateLog(state)} · " +
+                "재생한 곡 ${playedFiles.size}/${playlist.size} · " +
+                head.joinToString(" | ")
+        )
+    }
+
+    /** RANKING 결과와 DB 미매칭 곡을 합친 전체 재생 목록을 만듭니다. */
+    private fun buildPlaylist(context: Context, state: CarState): List<String> {
+        val assetFiles = SongRanker.assetTracks(context).toSet()
+        val ranked = try {
+            SongRanker.rank(context, state)
+        } catch (e: Exception) {
+            Log.w(TAG, "곡 순위 계산 실패", e)
+            emptyList()
+        }
+        val rankedFiles = ranked.mapNotNull { song ->
+            song.file.takeIf { it in assetFiles }
+        }
+        // tags.db 에 없는 mp3 는 뒤에 붙여서 모든 곡이 재생되게 합니다.
+        return rankedFiles + assetFiles.filter { it !in rankedFiles }.sorted()
+    }
+
+    private fun carStateLog(state: CarState): String =
+        "lang=${state.lang} event=${state.event} precip=${state.precip} " +
+            "place=${state.place} time=${state.time} season=${state.season} mood=${state.mood}"
+
     /**
      * CarState 로 tags.db 를 정렬해 플레이어의 재생 순서를 교체합니다.
      * DB 조회는 백그라운드에서 하고, 결과는 최신 세대일 때만 반영합니다.
@@ -248,20 +455,8 @@ object PlaybackController {
         val generation = ++playlistGeneration
 
         thread {
-            val ranked = try {
-                SongRanker.rank(context, state)
-            } catch (e: Exception) {
-                Log.w(TAG, "곡 순위 계산 실패", e)
-                return@thread
-            }
-
-            val assetFiles = SongRanker.assetTracks(context).toSet()
-            val rankedFiles = ranked.mapNotNull { song ->
-                song.file.takeIf { it in assetFiles }
-            }
-            // tags.db 에 없는 mp3 는 뒤에 붙여서 26곡이 모두 재생되게 합니다.
-            val playlist = rankedFiles + assetFiles.filter { it !in rankedFiles }.sorted()
-            val unmatchedDb = ranked.size - rankedFiles.size
+            val playlist = buildPlaylist(context, state)
+            if (playlist.isEmpty()) return@thread
 
             mainHandler.post {
                 if (generation != playlistGeneration) {
@@ -275,11 +470,8 @@ object PlaybackController {
                 }
                 Log.d(
                     TAG,
-                    "재생 순위 적용($reason): ${playlist.size}곡 · lang=${state.lang} " +
-                        "event=${state.event} precip=${state.precip} place=${state.place} " +
-                        "time=${state.time} season=${state.season} mood=${state.mood} · " +
-                        head.joinToString(" | ") +
-                        if (unmatchedDb > 0) " · DB미매칭=$unmatchedDb" else ""
+                    "재생 순위 적용($reason): ${playlist.size}곡 · ${carStateLog(state)} · " +
+                        head.joinToString(" | ")
                 )
             }
         }

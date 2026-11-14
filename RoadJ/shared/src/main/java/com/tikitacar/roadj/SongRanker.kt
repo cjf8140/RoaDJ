@@ -29,6 +29,18 @@ data class RankedSong(
     val bpm: Double?
 )
 
+/** 태그 표시/계산을 위한 곡 메타데이터 */
+data class SongTagInfo(
+    val file: String,
+    val lang: String?,
+    val event: String?,
+    val precip: String?,
+    val place: String?,
+    val time: String?,
+    val season: String?,
+    val bpm: Double?
+)
+
 object SongRanker {
 
     private const val TAG = "RoadJRank"
@@ -107,6 +119,37 @@ object SongRanker {
         }
         Log.d(TAG, "state=$state -> ${songs.size}곡")
         return songs
+    }
+
+    /**
+     * 모든 곡의 태그/BPM 정보를 조회합니다. (화면 태그 표시용, 정적 데이터)
+     */
+    @Synchronized
+    fun allTagInfo(context: Context): List<SongTagInfo> {
+        val db = open(context)
+        val result = ArrayList<SongTagInfo>(32)
+        try {
+            db.rawQuery(
+                "SELECT file, lang, event, precip, place, time, season, bpm FROM songs",
+                null
+            ).use { c ->
+                while (c.moveToNext()) {
+                    result += SongTagInfo(
+                        file = c.getString(0),
+                        lang = if (c.isNull(1)) null else c.getString(1),
+                        event = if (c.isNull(2)) null else c.getString(2),
+                        precip = if (c.isNull(3)) null else c.getString(3),
+                        place = if (c.isNull(4)) null else c.getString(4),
+                        time = if (c.isNull(5)) null else c.getString(5),
+                        season = if (c.isNull(6)) null else c.getString(6),
+                        bpm = if (c.isNull(7)) null else c.getDouble(7)
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "태그 정보 조회 실패", e)
+        }
+        return result
     }
 
     private fun open(context: Context): SQLiteDatabase {

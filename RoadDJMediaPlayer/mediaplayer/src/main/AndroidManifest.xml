@@ -32,9 +32,28 @@
             android:value="4" />
 
         <!--
-          미디어 플레이어 전용 앱의 진입 화면.
-          주행 중에는 이 화면(MediaPlaybackTemplate)만 표시되며,
-          위치/날씨/주변 정보 텍스트는 표시하지 않습니다.
+          커스텀 미디어 화면: CAL API 8 미만 호스트(이 에뮬레이터 포함)에서도
+          앨범 커버·곡 제목·진행 바를 라이브로 표시합니다.
+          위치/날씨/주변 정보는 표시하지 않습니다.
+        -->
+        <activity
+            android:name=".MediaPlayerActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          CAL API 8 이상 호스트용 MediaPlaybackTemplate 화면.
+          시스템 미디어 카드의 SHOW_MEDIA_PLAYBACK 으로 진입합니다.
         -->
         <activity
             android:name="androidx.car.app.activity.CarAppActivity"
@@ -47,9 +66,7 @@
                 android:value="true" />
 
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
                 <action android:name="androidx.car.app.media.action.SHOW_MEDIA_PLAYBACK" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>

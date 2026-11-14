@@ -15,7 +15,7 @@ import com.tikitacar.roadj.PlaybackController
 /**
  * RoadDJ media player 차량 서비스.
  *
- * 미디어 템플릿 세션을 만들고, MediaSession 토큰을 호스트에 등록합니다.
+ * 미디어 템플릿 세션을 만들고, 앱 공용 MediaSession 토큰을 호스트에 등록합니다.
  * 데이터 수집(위치/속도/날씨/주변)은 [DrivingDataCollector] 가 담당합니다.
  */
 class MediaCarAppService : CarAppService() {
@@ -31,31 +31,16 @@ class MediaCarAppService : CarAppService() {
         PlaybackController.initialize(applicationContext)
 
         return object : Session() {
-            private var mediaSession: MediaSessionController? = null
-
             init {
                 lifecycle.addObserver(
                     LifecycleEventObserver { _, event ->
-                        when (event) {
-                            Lifecycle.Event.ON_CREATE -> {
-                                val controller = MediaSessionController(
-                                    carContext,
-                                    onFirstPlay = {
-                                        // 첫 재생 시점에 차량 속도 권한을 요청합니다.
-                                        // (앱을 열자마자 권한 팝업이 첫 화면 조작을 가리지 않도록)
-                                        DrivingDataCollector.requestSpeedPermission(carContext)
-                                    }
-                                )
-                                mediaSession = controller
-                                registerPlaybackToken(carContext, controller)
+                        if (event == Lifecycle.Event.ON_CREATE) {
+                            val app = carContext.applicationContext as MediaPlayerApplication
+                            val controller = app.mediaSessionController
+                            controller.onFirstPlay = {
+                                DrivingDataCollector.requestSpeedPermission(carContext)
                             }
-
-                            Lifecycle.Event.ON_DESTROY -> {
-                                mediaSession?.release()
-                                mediaSession = null
-                            }
-
-                            else -> Unit
+                            registerPlaybackToken(carContext, controller)
                         }
                     }
                 )

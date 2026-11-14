@@ -415,6 +415,12 @@ object DrivingDataCollector {
         }
     }
 
+    /** 일반 Activity 에서 런타임 권한을 승인받은 뒤 호출합니다. */
+    fun onSpeedPermissionGranted() {
+        if (!started) return
+        if (hasSpeedPermission()) startSpeed()
+    }
+
     private fun startSpeed() {
         if (speedStarted) return
         speedStarted = true

@@ -1,0 +1,24 @@
+﻿# Build / IDE
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Generated packages / signing
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Local media assets (same policy as Labeler)
+shared/src/main/assets/audio/
+shared/src/main/assets/tags.db
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

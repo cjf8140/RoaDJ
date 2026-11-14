@@ -1,4 +1,4 @@
-pluginManagement {
+﻿pluginManagement {
     repositories {
         google {
             content {
@@ -20,12 +20,10 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         // Pleos Connect NaviHelper SDK
-        maven {
-            url = uri("https://nexus-playground.pleos.ai/repository/maven-releases/")
-        }
+        maven { url = uri("https://nexus-playground.pleos.ai/repository/maven-releases/") }
     }
 }
-
 rootProject.name = "RoadJ"
 include(":automotive")
 include(":shared")
+

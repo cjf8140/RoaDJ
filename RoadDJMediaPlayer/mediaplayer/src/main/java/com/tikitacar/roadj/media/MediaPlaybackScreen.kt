@@ -42,7 +42,7 @@ class MediaPlaybackScreen(carContext: CarContext) : Screen(carContext) {
     private fun buildMediaPlaybackTemplate(): Template {
         val header = Header.Builder()
             .setStartHeaderAction(Action.BACK)
-            .setTitle("RoadDJ media player")
+            .setTitle("RoaDJ")
             .build()
 
         return MediaPlaybackTemplate.Builder()
@@ -59,7 +59,7 @@ class MediaPlaybackScreen(carContext: CarContext) : Screen(carContext) {
             "차량 미디어 키 또는 아래 버튼으로 재생을 제어하세요.\n" +
                 "곡 순서는 위치·날씨·속도 데이터에 맞춰 자동으로 정렬됩니다."
         )
-            .setTitle("RoadDJ media player")
+            .setTitle("RoaDJ")
             .setHeaderAction(Action.BACK)
             .addAction(
                 Action.Builder()

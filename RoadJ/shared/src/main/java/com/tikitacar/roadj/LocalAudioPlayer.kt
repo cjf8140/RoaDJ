@@ -17,7 +17,11 @@ import java.io.File
  */
 class LocalAudioPlayer(
     context: Context,
-    private val onStateChanged: (State) -> Unit
+    private val onStateChanged: (State) -> Unit,
+    /** 실제로 곡 재생이 시작될 때 파일명을 전달합니다. (재생 이력 기록용) */
+    private val onTrackStarted: ((String) -> Unit)? = null,
+    /** 곡이 끝났을 때 호출됩니다. null 이면 기존처럼 다음 인덱스를 재생합니다. */
+    private val onTrackCompleted: (() -> Unit)? = null
 ) {
 
     data class State(
@@ -164,6 +168,39 @@ class LocalAudioPlayer(
         startTrack((currentIndex - 1 + tracks.size) % tracks.size)
     }
 
+    /** 현재 재생 목록에 없는 파일이면 목록에 추가한 뒤 해당 곡을 재생합니다. */
+    fun playFile(fileName: String) {
+        if (fileName.isBlank()) return
+        if (tracks.isEmpty()) {
+            tracks = listOf(fileName)
+            currentIndex = 0
+            startTrack(0)
+            return
+        }
+        var index = tracks.indexOf(fileName)
+        if (index < 0) {
+            tracks = (tracks + fileName).distinct()
+            index = tracks.indexOf(fileName)
+        }
+        if (index >= 0) startTrack(index)
+    }
+
+    /** 현재 재생 목록 순서에서 아직 재생하지 않은 첫 곡을 재생합니다. */
+    fun playNextUnplayed(playedFiles: Set<String>): Boolean {
+        if (tracks.isEmpty()) return false
+        val current = currentFileName()
+        val index = tracks.indexOfFirst { it != current && it !in playedFiles }
+        if (index < 0) return false
+        startTrack(index)
+        return true
+    }
+
+    /** 현재 재생 목록(순위가 반영된 전체 목록)을 반환합니다. */
+    fun playlist(): List<String> = tracks
+
+    /** 현재 재생 중인 파일명. 재생 목록이 비어 있으면 null. */
+    fun currentFileName(): String? = tracks.getOrNull(currentIndex)
+
     /** 재생 위치(밀리초)를 이동합니다. 호스트/시크바에서 호출. */
     fun seekTo(positionMs: Long) {
         val active = player ?: return
@@ -206,7 +243,11 @@ class LocalAudioPlayer(
                     TAG,
                     "완료: $fileName pos=${completed.currentPosition} dur=${completed.duration}"
                 )
-                next()
+                if (onTrackCompleted != null) {
+                    onTrackCompleted.invoke()
+                } else {
+                    next()
+                }
             }
             mediaPlayer.setOnErrorListener { _, what, extra ->
                 Log.w(TAG, "MediaPlayer 오류 what=$what extra=$extra")
@@ -220,6 +261,7 @@ class LocalAudioPlayer(
 
             playing = true
             Log.d(TAG, "재생 시작: $fileName (${index + 1}/${tracks.size})")
+            onTrackStarted?.invoke(fileName)
         } catch (e: Exception) {
             Log.w(TAG, "트랙 준비 실패: $fileName", e)
             playing = false

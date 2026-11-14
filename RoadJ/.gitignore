@@ -1,4 +1,4 @@
-# Build / IDE
+﻿# Build / IDE
 .gradle/
 **/build/
 local.properties
