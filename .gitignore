@@ -1,10 +1,31 @@
-# Editor / OS noise shared by every service
+# Editor / OS noise
 .vscode/
-.idea/
-Thumbs.db
-desktop.ini
-.DS_Store
-
-# Logs and temp files
 *.log
 *.tmp
+
+# Build / IDE
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# Generated packages / signing
+dist-apk/*.apk
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Local media assets (repository policy)
+shared/src/main/assets/audio/
+shared/src/main/assets/tags.db
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
