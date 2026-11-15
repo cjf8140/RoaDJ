@@ -1,14 +1,17 @@
 package com.tikitacar.roadj.media
 
 import android.app.Activity
+import android.app.Dialog
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -51,6 +54,7 @@ class MediaPlayerActivity : Activity() {
     private lateinit var rewindButton: ImageButton
     private lateinit var forwardButton: ImageButton
     private lateinit var backButton: TextView
+    private lateinit var languageButton: TextView
     private lateinit var queueContainer: LinearLayout
     private lateinit var playedCountView: TextView
 
@@ -85,18 +89,24 @@ class MediaPlayerActivity : Activity() {
         rewindButton = findViewById(R.id.btn_rewind)
         forwardButton = findViewById(R.id.btn_forward)
         backButton = findViewById(R.id.btn_back)
+        languageButton = findViewById(R.id.btn_language)
         queueContainer = findViewById(R.id.queue_container)
         playedCountView = findViewById(R.id.tv_played_count)
 
         cover.setImageResource(R.drawable.ic_roadj_cover)
 
+        DrivingDataCollector.requestGearPermission(this)
+
         val app = application as MediaPlayerApplication
         app.mediaSessionController.onFirstPlay = { requestSpeedPermission() }
 
         backButton.setOnClickListener { finish() }
+        languageButton.setOnClickListener { showLanguageDialog() }
+        updateLanguageButton()
         playPauseButton.setOnClickListener {
             PlaybackController.toggle()
             requestSpeedPermission()
+            DrivingDataCollector.requestGearPermission(this)
             render(PlaybackController.state())
         }
         prevButton.setOnClickListener {
@@ -172,6 +182,53 @@ class MediaPlayerActivity : Activity() {
         updateQueue(state.total)
     }
 
+    /** 언어 버튼: 검은색 목록 다이얼로그에서 언어를 선택합니다. */
+    private fun showLanguageDialog() {
+        val options = PlaybackController.languageOptions
+        val current = PlaybackController.carState().lang
+
+        val dialog = Dialog(this)
+        dialog.setContentView(R.layout.dialog_language)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+
+        val container = dialog.findViewById<LinearLayout>(R.id.language_options)
+        options.forEach { lang ->
+            val label = PlaybackController.languageDisplayName(lang)
+            val row = TextView(this).apply {
+                text = if (lang == current) "✓  $label" else "    $label"
+                textSize = 20f
+                setTextColor(if (lang == current) Color.WHITE else Color.parseColor("#D0D0D0"))
+                setPadding(dp(20), dp(16), dp(20), dp(16))
+                isClickable = true
+                setBackgroundColor(
+                    if (lang == current) Color.parseColor("#262626") else Color.TRANSPARENT
+                )
+                setOnClickListener {
+                    Log.d(TAG, "곡 언어 선택: $lang")
+                    PlaybackController.setLanguage(lang)
+                    updateLanguageButton()
+                    lastQueueSignature = null
+                    lastTagText = null
+                    render(PlaybackController.state())
+                    dialog.dismiss()
+                }
+            }
+            container.addView(row)
+        }
+
+        dialog.findViewById<TextView>(R.id.btn_cancel).setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
+        dialog.window?.setLayout(dp(520), ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+
+    private fun updateLanguageButton() {
+        languageButton.text = "언어 · " +
+            PlaybackController.languageDisplayName(PlaybackController.carState().lang)
+    }
+
     /** 곡별 태그 중 현재 주행 상황과 일치하는 태그만 최대 3개 표시합니다. */
     private fun updateTags() {
         val file = PlaybackController.currentFile()
@@ -203,7 +260,8 @@ class MediaPlayerActivity : Activity() {
      * 목록이 바뀔 때만 다시 그립니다.
      */
     private fun updateQueue(total: Int) {
-        playedCountView.text = "재생한 곡 ${PlaybackController.playedCount()}/$total"
+        playedCountView.text =
+            "재생한 곡 ${PlaybackController.playedCountInPlaylist()}/$total"
 
         val upcoming = PlaybackController.upcomingFiles(QUEUE_LIMIT)
         val signature = upcoming.joinToString("|")
@@ -297,13 +355,33 @@ class MediaPlayerActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CAR_SPEED) {
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-                DrivingDataCollector.onSpeedPermissionGranted()
-            } else {
-                Log.w(TAG, "차량 속도 권한 거부")
+        when (requestCode) {
+            REQUEST_CAR_SPEED -> {
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                    DrivingDataCollector.onSpeedPermissionGranted()
+                } else {
+                    Log.w(TAG, "차량 속도 권한 거부")
+                }
+            }
+
+            DrivingDataCollector.REQUEST_CAR_POWERTRAIN -> {
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                    DrivingDataCollector.onGearPermissionGranted()
+                } else {
+                    Log.w(TAG, "차량 기어 권한 거부")
+                }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        SceneController.markSceneVisible(SceneController.Scene.PLAYER)
+    }
+
+    override fun onStop() {
+        SceneController.deactivate(SceneController.Scene.PLAYER)
+        super.onStop()
     }
 
     override fun onResume() {

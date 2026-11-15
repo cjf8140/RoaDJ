@@ -1,6 +1,7 @@
 <resources>
     <string name="app_name">RoadDJ player</string>
     <string name="media_subtitle">media player</string>
+    <string name="media_language">곡 언어</string>
     <string name="media_back">뒤로</string>
     <string name="media_cover_description">RoaDJ 앨범 커버</string>
     <string name="media_previous">이전 곡</string>

@@ -3,6 +3,7 @@ package com.tikitacar.roadj
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import java.util.Calendar
 import java.util.Locale
@@ -25,9 +26,23 @@ object PlaybackController {
     /** 곡이 끝나기 몇 ms 전에 다음 곡을 미리 선택할지 */
     private const val NEXT_PREPARE_BEFORE_END_MS = 3_000L
 
-    /** 사용자가 선택한 곡 언어(ko/en/ja) 저장 키 */
+    /** 사용자가 선택한 곡 언어(all/ko/en/ja) 저장 키 */
     private const val PREFS_NAME = "roadj_settings"
     private const val KEY_RANKING_LANG = "ranking_lang"
+
+    /** 미디어 앱 언어 선택 저장 키 (RoadJ 본앱과 분리) */
+    const val MEDIA_LANGUAGE_PREFS_KEY = "media_ranking_lang"
+
+    /** 프로세스가 종료되어도 마지막 재생 상태를 복원할 수 있도록 저장하는 키 */
+    private const val KEY_SNAPSHOT_LANG = "snapshot_lang"
+    private const val KEY_SNAPSHOT_FILE = "snapshot_file"
+    private const val KEY_SNAPSHOT_POSITION = "snapshot_position"
+    private const val KEY_SNAPSHOT_PLAYING = "snapshot_playing"
+    private const val KEY_SNAPSHOT_PLAYED = "snapshot_played"
+    private const val SNAPSHOT_SAVE_INTERVAL_MS = 1_000L
+
+    /** UI 에서 순환 선택할 수 있는 언어 목록 (전체 포함) */
+    val languageOptions: List<String> = listOf("all", "ko", "en", "ja")
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArrayList<(LocalAudioPlayer.State) -> Unit>()
@@ -36,6 +51,13 @@ object PlaybackController {
     private var initialized = false
     private var appContext: Context? = null
     private var player: LocalAudioPlayer? = null
+
+    /** 미디어 앱에서만 true: 선택한 언어의 곡만 재생 목록에 넣습니다. */
+    @Volatile
+    private var filterByLanguage = false
+
+    /** 언어 선택값 저장 키 (RoadJ 본앱과 미디어 앱이 서로 섞이지 않도록 분리) */
+    private var languagePrefsKey = KEY_RANKING_LANG
 
     @Volatile
     private var carState = CarState(
@@ -66,28 +88,45 @@ object PlaybackController {
     /** 현재 곡의 종료 3초 전에 다음 순서를 갱신했는지 여부 */
     private var nextOrderPrepared = false
 
+    /** 마지막 스냅샷 저장 시각 (ms) */
+    private var lastSnapshotSaveAt = 0L
+
     private val progressTicker = object : Runnable {
         override fun run() {
             // 시계/달력이 바뀌면(낮↔밤, 계절, 크리스마스) 순위도 자동 갱신합니다.
             refreshClockState()
             // 곡 종료 3초 전이면 최신 상태로 다음 곡을 미리 선택합니다.
             maybePrepareNextTrack()
+            persistSnapshotIfActive()
             mainHandler.postDelayed(this, PROGRESS_TICK_MS)
         }
     }
 
     /**
      * 앱 어디서든 호출해도 안전하게 한 번만 초기화합니다.
+     *
+     * @param defaultLanguage 저장된 선택이 없을 때 사용할 언어 ("all" 이면 전체)
+     * @param filterByLanguage true 이면 선택한 언어의 곡만 재생 목록에 넣습니다.
+     *        (RoadDJ player / RoadDJ Media Template 에서만 true)
+     * @param languagePrefsKey 언어 선택값을 저장할 SharedPreferences 키.
+     *        미디어 앱은 본앱과 다른 키를 사용해 선택값이 섞이지 않게 합니다.
      */
-    fun initialize(context: Context) {
+    fun initialize(
+        context: Context,
+        defaultLanguage: String = "ko",
+        filterByLanguage: Boolean = false,
+        languagePrefsKey: String = KEY_RANKING_LANG
+    ) {
         if (initialized) return
         synchronized(this) {
             if (initialized) return
             val app = context.applicationContext
             appContext = app
+            this.filterByLanguage = filterByLanguage
+            this.languagePrefsKey = languagePrefsKey
 
             carState = carState.copy(
-                lang = savedLanguage(app),
+                lang = savedLanguage(app, defaultLanguage),
                 event = currentEventCode(),
                 time = currentTimeOfDay(),
                 season = currentSeasonCode()
@@ -97,6 +136,7 @@ object PlaybackController {
                 app,
                 onStateChanged = { state ->
                     listeners.forEach { runCatching { it(state) } }
+                    persistSnapshot(force = true)
                 },
                 onTrackStarted = { fileName -> onTrackStarted(fileName) },
                 onTrackCompleted = { onTrackCompleted() }
@@ -107,6 +147,19 @@ object PlaybackController {
             mainHandler.removeCallbacks(progressTicker)
             mainHandler.post(progressTicker)
         }
+    }
+
+    /**
+     * RoadDJ player / RoadDJ Media Template 용 초기화.
+     * 언어를 선택하지 않으면 모든 언어의 곡을 재생합니다.
+     */
+    fun initializeMedia(context: Context) {
+        initialize(
+            context,
+            defaultLanguage = "all",
+            filterByLanguage = true,
+            languagePrefsKey = MEDIA_LANGUAGE_PREFS_KEY
+        )
     }
 
     /** UI 에 재생 상태를 전달받을 리스너 등록. 해제 함수를 반환합니다. */
@@ -152,7 +205,11 @@ object PlaybackController {
 
         val playlist = buildPlaylist(context, carState)
         if (playlist.isEmpty()) {
-            localPlayer.next()
+            if (filterByLanguage && carState.lang != "all") {
+                localPlayer.clearPlaylist("다음 곡: 선택한 언어의 곡 없음")
+            } else {
+                localPlayer.next()
+            }
             return
         }
 
@@ -200,6 +257,112 @@ object PlaybackController {
 
     /** 지금까지 실제로 재생을 시작한 곡 수 */
     fun playedCount(): Int = playedFiles.size
+
+    /** 현재 재생 목록 안에서 실제로 재생을 시작한 곡 수 (언어 필터 기준) */
+    fun playedCountInPlaylist(): Int {
+        val currentPlaylist = player?.playlist()?.toSet().orEmpty()
+        return playedFiles.count { it in currentPlaylist }
+    }
+
+    /** 언어 선택 UI 에 표시할 이름 */
+    fun languageDisplayName(lang: String): String = when (lang) {
+        "all" -> "전체"
+        "ko" -> "한국어"
+        "en" -> "English"
+        "ja" -> "日本語"
+        else -> lang
+    }
+
+    /** 현재 재생 목록이 언어 필터를 사용하는지 여부 */
+    fun isLanguageFilterEnabled(): Boolean = filterByLanguage
+
+    /** 씬 전환 시 대상 앱에서 언어 필터를 켤 때 사용합니다. */
+    fun setLanguageFilterEnabled(enabled: Boolean) {
+        filterByLanguage = enabled
+    }
+
+    /** 실제로 로드된 곡이 있는지 여부 */
+    fun hasActiveTrack(): Boolean = player?.hasActiveTrack() == true
+
+    /** 다른 앱 씬으로 넘길 현재 재생 상태를 캡처합니다. */
+    fun snapshot(): SceneSnapshot {
+        val current = state()
+        return SceneSnapshot(
+            lang = carState.lang,
+            file = currentFile(),
+            positionMs = current.positionMs,
+            playing = current.playing,
+            playedFiles = playedFiles.toList()
+        )
+    }
+
+    /**
+     * 프로세스가 종료된 뒤에도 마지막 곡/위치를 복원할 수 있도록 저장된 스냅샷.
+     * 실제 재생 중인 곡이 없을 때 상태 요청에 응답할 때 사용합니다.
+     */
+    fun lastSavedSnapshot(): SceneSnapshot? {
+        val app = appContext ?: return null
+        val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val file = prefs.getString(KEY_SNAPSHOT_FILE, null) ?: return null
+        if (file.isBlank()) return null
+        return SceneSnapshot(
+            lang = prefs.getString(KEY_SNAPSHOT_LANG, carState.lang) ?: carState.lang,
+            file = file,
+            positionMs = prefs.getLong(KEY_SNAPSHOT_POSITION, 0L),
+            playing = prefs.getBoolean(KEY_SNAPSHOT_PLAYING, false),
+            playedFiles = prefs.getStringSet(KEY_SNAPSHOT_PLAYED, emptySet())
+                ?.toList()
+                .orEmpty()
+        )
+    }
+
+    private fun persistSnapshotIfActive() {
+        persistSnapshot(force = false)
+    }
+
+    private fun persistSnapshot(force: Boolean) {
+        val localPlayer = player ?: return
+        if (!localPlayer.hasActiveTrack()) return
+
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastSnapshotSaveAt < SNAPSHOT_SAVE_INTERVAL_MS) return
+        lastSnapshotSaveAt = now
+
+        val app = appContext ?: return
+        val current = snapshot()
+        app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_SNAPSHOT_LANG, current.lang)
+            .putString(KEY_SNAPSHOT_FILE, current.file)
+            .putLong(KEY_SNAPSHOT_POSITION, current.positionMs)
+            .putBoolean(KEY_SNAPSHOT_PLAYING, current.playing)
+            .putStringSet(KEY_SNAPSHOT_PLAYED, current.playedFiles.toSet())
+            .apply()
+    }
+
+    /**
+     * 다른 앱 씬에서 넘어온 상태를 복원합니다.
+     * 언어 필터를 켜고, 같은 곡을 같은 위치에서 재생/일시정지 상태로 준비합니다.
+     */
+    fun restoreSnapshot(snapshot: SceneSnapshot) {
+        setLanguageFilterEnabled(true)
+        playedFiles.clear()
+        playedFiles.addAll(snapshot.playedFiles)
+        setLanguage(snapshot.lang)
+
+        val file = snapshot.file
+        if (!file.isNullOrBlank()) {
+            player?.playFile(file, snapshot.positionMs, snapshot.playing)
+        } else if (!snapshot.playing) {
+            player?.pause()
+        }
+        Log.d(
+            TAG,
+            "씬 상태 복원: lang=${snapshot.lang}, file=${file?.substringBeforeLast('.')}, " +
+                "position=${snapshot.positionMs}ms, playing=${snapshot.playing}, " +
+                "played=${snapshot.playedFiles.size}"
+        )
+    }
 
     /**
      * 현재 순위 순서에서 아직 재생하지 않은 곡을 앞에서부터 반환합니다.
@@ -252,12 +415,14 @@ object PlaybackController {
      * 다음 실행에서도 유지되며, 순위 기준 `lang` 값으로 사용됩니다.
      */
     fun setLanguage(lang: String) {
-        val normalized = normalizeLanguage(lang)
+        val normalized = normalizeLanguage(lang, defaultLanguage())
+        nextOrderPrepared = false
         appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             ?.edit()
-            ?.putString(KEY_RANKING_LANG, normalized)
+            ?.putString(languagePrefsKey, normalized)
             ?.apply()
         updateCarState { it.copy(lang = normalized) }
+        Log.d(TAG, "곡 언어 선택: $normalized (필터=${filterByLanguage})")
     }
 
     /**
@@ -268,21 +433,27 @@ object PlaybackController {
         updateCarState { it.copy(mood = RankingMood.forSpeedKmh(speedKmh)) }
     }
 
-    /** RANKING 의 lang 값. ko/en/ja 가 아니면 ko. */
-    private fun normalizeLanguage(lang: String): String =
-        if (lang == "ko" || lang == "en" || lang == "ja") lang else "ko"
-
-    /** 저장된 사용자 선택이 있으면 그 값을, 없으면 시스템 언어를 사용합니다. */
-    private fun savedLanguage(context: Context): String {
-        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_RANKING_LANG, null)
-        return normalizeLanguage(saved ?: preferredLanguage())
+    /** RANKING 의 lang 값. all/ko/en/ja 가 아니면 fallback. */
+    private fun normalizeLanguage(lang: String, fallback: String): String = when (lang) {
+        "all", "ko", "en", "ja" -> lang
+        else -> fallback
     }
+
+    /** 저장된 사용자 선택이 있으면 그 값을, 없으면 defaultLanguage 를 사용합니다. */
+    private fun savedLanguage(context: Context, defaultLanguage: String): String {
+        val saved = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(languagePrefsKey, null)
+        return normalizeLanguage(saved ?: defaultLanguage, defaultLanguage)
+    }
+
+    /** 미디어 앱은 "전체", 본앱은 시스템 언어를 기본값으로 사용합니다. */
+    private fun defaultLanguage(): String =
+        if (filterByLanguage) "all" else preferredLanguage()
 
     /** RANKING 의 lang 기본값. ko/en/ja 가 아니면 ko. */
     private fun preferredLanguage(): String {
         val code = Locale.getDefault().language.lowercase(Locale.US)
-        return normalizeLanguage(code)
+        return normalizeLanguage(code, "ko")
     }
 
     private fun currentEventCode(): String {
@@ -352,6 +523,9 @@ object PlaybackController {
         }
         val playlist = buildPlaylist(context, carState)
         if (playlist.isEmpty()) {
+            if (filterByLanguage && carState.lang != "all") {
+                localPlayer.clearPlaylist("곡 종료: 선택한 언어의 곡 없음")
+            }
             localPlayer.pause()
             return
         }
@@ -433,9 +607,21 @@ object PlaybackController {
             Log.w(TAG, "곡 순위 계산 실패", e)
             emptyList()
         }
-        val rankedFiles = ranked.mapNotNull { song ->
-            song.file.takeIf { it in assetFiles }
-        }
+
+        val languageFiltered = filterByLanguage && state.lang != "all"
+        val rankedFiles = ranked.asSequence()
+            .filter { song ->
+                !languageFiltered || song.lang == state.lang
+            }
+            .mapNotNull { song ->
+                song.file.takeIf { it in assetFiles }
+            }
+            .distinct()
+            .toList()
+
+        // 언어 필터가 켜져 있으면 언어를 알 수 없는(tags.db 미매칭) 곡은 제외합니다.
+        if (languageFiltered) return rankedFiles
+
         // tags.db 에 없는 mp3 는 뒤에 붙여서 모든 곡이 재생되게 합니다.
         return rankedFiles + assetFiles.filter { it !in rankedFiles }.sorted()
     }
@@ -456,11 +642,20 @@ object PlaybackController {
 
         thread {
             val playlist = buildPlaylist(context, state)
-            if (playlist.isEmpty()) return@thread
 
             mainHandler.post {
                 if (generation != playlistGeneration) {
                     Log.d(TAG, "오래된 순위 결과 무시 ($reason)")
+                    return@post
+                }
+                if (playlist.isEmpty()) {
+                    if (filterByLanguage && state.lang != "all") {
+                        localPlayer.clearPlaylist("$reason: 선택한 언어의 곡 없음")
+                        Log.d(
+                            TAG,
+                            "재생 순위 적용($reason): 0곡 · ${carStateLog(state)}"
+                        )
+                    }
                     return@post
                 }
                 localPlayer.setPlaylist(playlist, reason)

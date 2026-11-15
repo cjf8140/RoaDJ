@@ -1,48 +1,106 @@
 package com.tikitacar.roadj.media
 
-import android.util.Log
-import android.widget.Toast
-import androidx.car.app.AppManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.annotations.ExperimentalCarApi
 import androidx.car.app.media.model.MediaPlaybackTemplate
 import androidx.car.app.model.Action
+import androidx.car.app.model.ActionStrip
+import androidx.car.app.model.CarIcon
 import androidx.car.app.model.Header
-import androidx.car.app.model.MessageTemplate
+import androidx.car.app.model.Pane
+import androidx.car.app.model.PaneTemplate
+import androidx.car.app.model.Row
 import androidx.car.app.model.Template
+import androidx.core.graphics.drawable.IconCompat
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import com.tikitacar.roadj.PlaybackController
+import com.tikitacar.roadj.SongTagFormatter
 
 /**
- * RoadDJ media player 의 재생 화면.
+ * 주행(Drive) 씬.
+ *
+ * RoadDJ player 앱 안에서 RoadDJ Media Template 과 동일한 PaneTemplate 화면을
+ * 렌더링합니다. 같은 프로세스의 [PlaybackController] 를 사용하므로
+ * Park/Neutral 씬(RoadDJ player)에서 선택한 언어와 현재 곡이 그대로 이어집니다.
  *
  * - CAL API 8 이상: [MediaPlaybackTemplate]
- *   곡 정보/재생 컨트롤은 호스트가 MediaSession 상태로 직접 렌더링하므로
- *   곡이 바뀌어도 템플릿을 다시 보내지 않아 안전합니다.
- *
- * - CAL API 4~7: [MessageTemplate] 폴백
- *   MessageTemplate 은 제목/본문이 바뀌면 템플릿 스텝 쿼터(최대 5개)를 소모합니다.
- *   곡이 바뀔 때마다 화면을 갱신하면 쿼터가 소진되어 앱이 종료되므로,
- *   폴백 화면은 "고정된 안내 + 재생 제어 버튼"으로만 구성하고 invalidate 하지 않습니다.
+ * - CAL API 4~7: [PaneTemplate] 폴백 (Row 제목/개수 고정, 텍스트만 갱신)
  */
 @OptIn(ExperimentalCarApi::class)
-class MediaPlaybackScreen(carContext: CarContext) : Screen(carContext) {
+class MediaPlaybackScreen(carContext: CarContext) :
+    Screen(carContext), DefaultLifecycleObserver {
+
+    private companion object {
+        const val MEDIA_TEMPLATE_API_LEVEL = 8
+        const val ROW_TITLE = "지금 재생 중"
+        const val TEMPLATE_TITLE = "RoaDJ"
+        const val UPDATE_MS = 1_000L
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var lastSignature: String? = null
+
+    private val cover: Bitmap? by lazy {
+        runCatching {
+            BitmapFactory.decodeResource(carContext.resources, R.drawable.ic_roadj_cover)
+        }.getOrNull()
+    }
+
+    private val ticker = object : Runnable {
+        override fun run() {
+            val signature = currentSignature()
+            if (signature != lastSignature) {
+                lastSignature = signature
+                invalidate()
+            }
+            handler.postDelayed(this, UPDATE_MS)
+        }
+    }
 
     init {
-        PlaybackController.initialize(carContext)
+        PlaybackController.initializeMedia(carContext)
+        SceneController.initialize(carContext)
+        DrivingDataCollector.requestGearPermission(carContext)
+        lifecycle.addObserver(this)
+    }
+
+    override fun onStart(owner: LifecycleOwner) {
+        SceneController.markSceneVisible(SceneController.Scene.TEMPLATE)
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        SceneController.deactivate(SceneController.Scene.TEMPLATE)
+    }
+
+    override fun onCreate(owner: LifecycleOwner) {
+        if (carContext.carAppApiLevel < MEDIA_TEMPLATE_API_LEVEL) {
+            lastSignature = currentSignature()
+            handler.post(ticker)
+        }
+    }
+
+    override fun onDestroy(owner: LifecycleOwner) {
+        handler.removeCallbacks(ticker)
+        SceneController.deactivate(SceneController.Scene.TEMPLATE)
     }
 
     override fun onGetTemplate(): Template =
         if (carContext.carAppApiLevel >= MEDIA_TEMPLATE_API_LEVEL) {
             buildMediaPlaybackTemplate()
         } else {
-            buildFallbackTemplate()
+            buildPaneTemplate()
         }
 
     private fun buildMediaPlaybackTemplate(): Template {
         val header = Header.Builder()
             .setStartHeaderAction(Action.BACK)
-            .setTitle("RoaDJ")
+            .setTitle(TEMPLATE_TITLE)
             .build()
 
         return MediaPlaybackTemplate.Builder()
@@ -50,70 +108,81 @@ class MediaPlaybackScreen(carContext: CarContext) : Screen(carContext) {
             .build()
     }
 
-    /**
-     * 구형 호스트(CAL API 4~7)용 고정 화면.
-     * 템플릿을 다시 보내지 않으므로 5-step 쿼터를 소모하지 않습니다.
-     */
-    private fun buildFallbackTemplate(): Template {
-        return MessageTemplate.Builder(
-            "차량 미디어 키 또는 아래 버튼으로 재생을 제어하세요.\n" +
-                "곡 순서는 위치·날씨·속도 데이터에 맞춰 자동으로 정렬됩니다."
-        )
-            .setTitle("RoaDJ")
-            .setHeaderAction(Action.BACK)
+    private fun buildPaneTemplate(): Template {
+        val state = PlaybackController.state()
+        val songTitle = state.songTitle.ifBlank { state.title }
+        val tags = currentTags()
+
+        val artistText = buildString {
+            append(state.artist.ifBlank { "RoaDJ" })
+            if (tags.isNotEmpty()) {
+                append(" • ")
+                append(tags.joinToString(" ") { "#$it" })
+            }
+        }
+        val statusText = if (state.playing) "재생 중" else "일시정지"
+
+        val rowBuilder = Row.Builder()
+            .setTitle(ROW_TITLE)
+            .addText(songTitle)
+            .addText("$artistText · $statusText")
+
+        cover?.let { bitmap ->
+            rowBuilder.setImage(
+                CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
+            )
+        }
+
+        val pane = Pane.Builder()
+            .addRow(rowBuilder.build())
+            .build()
+
+        val actions = ActionStrip.Builder()
             .addAction(
                 Action.Builder()
-                    .setTitle("재생/일시정지")
+                    .setIcon(mediaIcon(android.R.drawable.ic_media_play))
                     .setOnClickListener {
-                        val wasPlaying = PlaybackController.state().playing
-                        Log.d(TAG, "폴백 버튼: 재생/일시정지 (wasPlaying=$wasPlaying)")
-                        try {
-                            // 화면이 만들어진 직후 첫 클릭이 와도 확실히 초기화되도록 보장합니다.
-                            PlaybackController.initialize(carContext)
-                            PlaybackController.toggle()
-                            showToast(if (wasPlaying) "일시정지" else "재생")
-                            // 첫 조작 시점에 속도 권한을 요청해 앱 시작 화면을 가리지 않게 합니다.
-                            DrivingDataCollector.requestSpeedPermission(carContext)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "재생/일시정지 실행 실패", e)
-                            showToast("재생 제어 실패")
-                        }
+                        PlaybackController.toggle()
+                        DrivingDataCollector.requestSpeedPermission(carContext)
+                        invalidate()
                     }
                     .build()
             )
             .addAction(
                 Action.Builder()
-                    .setTitle("다음 곡")
+                    .setIcon(mediaIcon(android.R.drawable.ic_media_next))
                     .setOnClickListener {
-                        Log.d(TAG, "폴백 버튼: 다음 곡")
-                        try {
-                            PlaybackController.initialize(carContext)
-                            PlaybackController.next()
-                            showToast("다음 곡")
-                            DrivingDataCollector.requestSpeedPermission(carContext)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "다음 곡 실행 실패", e)
-                            showToast("다음 곡 실패")
-                        }
+                        PlaybackController.next()
+                        invalidate()
                     }
                     .build()
             )
             .build()
+
+        return PaneTemplate.Builder(pane)
+            .setTitle(TEMPLATE_TITLE)
+            .setHeaderAction(Action.BACK)
+            .setActionStrip(actions)
+            .build()
     }
 
-    /** 호스트 화면에 짧은 토스트를 표시합니다. (템플릿 쿼터와 무관) */
-    private fun showToast(text: String) {
-        try {
-            val appManager =
-                carContext.getCarService(CarContext.APP_SERVICE) as AppManager
-            appManager.showToast(text, Toast.LENGTH_SHORT)
-        } catch (e: Exception) {
-            Log.w(TAG, "토스트 표시 실패: $text", e)
-        }
+    private fun mediaIcon(resourceId: Int): CarIcon =
+        CarIcon.Builder(IconCompat.createWithResource(carContext, resourceId)).build()
+
+    private fun currentTags(): List<String> {
+        val file = PlaybackController.currentFile() ?: return emptyList()
+        return SongTagFormatter.tagsFor(
+            carContext,
+            file,
+            PlaybackController.carState()
+        )
     }
 
-    private companion object {
-        const val MEDIA_TEMPLATE_API_LEVEL = 8
-        const val TAG = "RoadDJMediaScreen"
+    private fun currentSignature(): String {
+        val state = PlaybackController.state()
+        val songTitle = state.songTitle.ifBlank { state.title }
+        val artist = state.artist
+        val tags = currentTags().joinToString(",")
+        return "$songTitle|$artist|$tags|${PlaybackController.currentFile()}|${state.playing}"
     }
 }

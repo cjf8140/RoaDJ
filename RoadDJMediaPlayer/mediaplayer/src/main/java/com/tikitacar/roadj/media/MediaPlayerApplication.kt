@@ -15,7 +15,8 @@ class MediaPlayerApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        PlaybackController.initialize(this)
+        // 미디어 앱은 언어를 선택하지 않으면 전체 언어를 재생합니다.
+        PlaybackController.initializeMedia(this)
         DrivingDataCollector.start(this)
         mediaSessionController = MediaSessionController(this)
     }

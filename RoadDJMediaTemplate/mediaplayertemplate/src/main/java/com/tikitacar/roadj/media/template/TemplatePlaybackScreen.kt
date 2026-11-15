@@ -65,7 +65,18 @@ class TemplatePlaybackScreen(carContext: CarContext) :
 
     init {
         PlaybackController.initialize(carContext)
+        TemplateSceneController.initialize(carContext)
+        DrivingDataCollector.requestGearPermission(carContext)
         lifecycle.addObserver(this)
+    }
+
+    override fun onStart(owner: LifecycleOwner) {
+        TemplateSceneController.markSceneVisible()
+        TemplateSceneController.requestPlayerStateIfNeeded(carContext)
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        TemplateSceneController.deactivate()
     }
 
     override fun onCreate(owner: LifecycleOwner) {
@@ -77,6 +88,7 @@ class TemplatePlaybackScreen(carContext: CarContext) :
 
     override fun onDestroy(owner: LifecycleOwner) {
         handler.removeCallbacks(ticker)
+        TemplateSceneController.deactivate()
     }
 
     override fun onGetTemplate(): Template =

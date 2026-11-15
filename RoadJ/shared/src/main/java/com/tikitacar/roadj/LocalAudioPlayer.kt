@@ -61,6 +61,12 @@ class LocalAudioPlayer(
 
     private var player: MediaPlayer? = null
     private var currentIndex = if (tracks.isEmpty()) -1 else 0
+
+    /**
+     * 실제로 재생 중인 파일명. 재생 목록이 언어 필터 등으로 바뀌어
+     * 현재 곡이 목록에서 빠져도 메타데이터는 이 값을 사용합니다.
+     */
+    private var activeFileName: String? = null
     private var playing = false
 
     private var focusRequest: AudioFocusRequest? = null
@@ -103,19 +109,34 @@ class LocalAudioPlayer(
             return
         }
 
-        val current = if (player != null && currentIndex in tracks.indices) {
-            tracks[currentIndex]
-        } else {
-            null
+        val current = when {
+            player != null -> activeFileName
+            currentIndex in tracks.indices -> tracks[currentIndex]
+            else -> null
         }
         tracks = ordered
         currentIndex = when {
             current == null -> 0
-            else -> ordered.indexOf(current).let { if (it >= 0) it else 0 }
+            else -> ordered.indexOf(current).let { index ->
+                // 실제 재생 중인 곡이 필터로 빠지면 -1 로 두어 메타데이터를 유지하고,
+                // 아직 재생을 시작하지 않았다면 새 목록의 첫 곡을 가리킵니다.
+                if (index >= 0) index else if (player == null) 0 else -1
+            }
         }
 
         Log.d(TAG, "재생 목록 갱신($reason): ${ordered.size}곡, 현재=${current ?: "-"} (${currentIndex + 1}번)")
         Log.d(TAG, "재생 순서($reason): " + ordered.joinToString(" | "))
+        onStateChanged(state())
+    }
+
+    /**
+     * 재생 목록만 비웁니다. 실제 재생 중인 곡의 메타데이터는 유지되어
+     * 현재 곡은 끝까지 재생되고, 그 다음 곡부터는 선택되지 않습니다.
+     */
+    fun clearPlaylist(reason: String) {
+        tracks = emptyList()
+        currentIndex = -1
+        Log.d(TAG, "재생 목록 비움($reason)")
         onStateChanged(state())
     }
 
@@ -165,16 +186,29 @@ class LocalAudioPlayer(
 
     fun previous() {
         if (tracks.isEmpty()) return
-        startTrack((currentIndex - 1 + tracks.size) % tracks.size)
+        val index = if (currentIndex >= 0) {
+            (currentIndex - 1 + tracks.size) % tracks.size
+        } else {
+            // 현재 곡이 언어 필터로 목록에서 빠진 경우 새 목록의 마지막 곡으로 이동합니다.
+            tracks.size - 1
+        }
+        startTrack(index)
     }
 
-    /** 현재 재생 목록에 없는 파일이면 목록에 추가한 뒤 해당 곡을 재생합니다. */
-    fun playFile(fileName: String) {
+    /**
+     * 현재 재생 목록에 없는 파일이면 목록에 추가한 뒤 해당 곡을 재생합니다.
+     * 씬 전환 복원 시 [startPositionMs] 위치에서 [autoPlay] 상태로 준비할 수 있습니다.
+     */
+    fun playFile(
+        fileName: String,
+        startPositionMs: Long = 0L,
+        autoPlay: Boolean = true
+    ) {
         if (fileName.isBlank()) return
         if (tracks.isEmpty()) {
             tracks = listOf(fileName)
             currentIndex = 0
-            startTrack(0)
+            startTrack(0, startPositionMs, autoPlay)
             return
         }
         var index = tracks.indexOf(fileName)
@@ -182,7 +216,7 @@ class LocalAudioPlayer(
             tracks = (tracks + fileName).distinct()
             index = tracks.indexOf(fileName)
         }
-        if (index >= 0) startTrack(index)
+        if (index >= 0) startTrack(index, startPositionMs, autoPlay)
     }
 
     /** 현재 재생 목록 순서에서 아직 재생하지 않은 첫 곡을 재생합니다. */
@@ -198,8 +232,11 @@ class LocalAudioPlayer(
     /** 현재 재생 목록(순위가 반영된 전체 목록)을 반환합니다. */
     fun playlist(): List<String> = tracks
 
+    /** 실제로 MediaPlayer 에 로드된 곡이 있는지 여부 */
+    fun hasActiveTrack(): Boolean = activeFileName != null
+
     /** 현재 재생 중인 파일명. 재생 목록이 비어 있으면 null. */
-    fun currentFileName(): String? = tracks.getOrNull(currentIndex)
+    fun currentFileName(): String? = activeFileName ?: tracks.getOrNull(currentIndex)
 
     /** 재생 위치(밀리초)를 이동합니다. 호스트/시크바에서 호출. */
     fun seekTo(positionMs: Long) {
@@ -220,9 +257,14 @@ class LocalAudioPlayer(
         focusRequest?.let { runCatching { audioManager.abandonAudioFocusRequest(it) } }
         focusRequest = null
         currentIndex = -1
+        activeFileName = null
     }
 
-    private fun startTrack(index: Int) {
+    private fun startTrack(
+        index: Int,
+        startPositionMs: Long = 0L,
+        autoPlay: Boolean = true
+    ) {
         if (tracks.isEmpty()) return
         if (!requestFocus()) {
             onStateChanged(state())
@@ -232,6 +274,7 @@ class LocalAudioPlayer(
         releasePlayer()
         currentIndex = index
         val fileName = tracks[index]
+        activeFileName = fileName
 
         try {
             val mediaPlayer = MediaPlayer()
@@ -256,15 +299,26 @@ class LocalAudioPlayer(
                 true
             }
             mediaPlayer.prepare()
+            if (startPositionMs > 0L) {
+                val target = startPositionMs.coerceIn(0L, mediaPlayer.duration.toLong())
+                mediaPlayer.seekTo(target, MediaPlayer.SEEK_CLOSEST)
+                Log.d(TAG, "재생 위치 복원: $fileName ${target}ms")
+            }
             Log.d(TAG, "준비 완료: $fileName dur=${mediaPlayer.duration}ms")
-            mediaPlayer.start()
 
-            playing = true
-            Log.d(TAG, "재생 시작: $fileName (${index + 1}/${tracks.size})")
+            if (autoPlay) {
+                mediaPlayer.start()
+                playing = true
+                Log.d(TAG, "재생 시작: $fileName (${index + 1}/${tracks.size})")
+            } else {
+                playing = false
+                Log.d(TAG, "일시정지 상태로 준비: $fileName (${index + 1}/${tracks.size})")
+            }
             onTrackStarted?.invoke(fileName)
         } catch (e: Exception) {
             Log.w(TAG, "트랙 준비 실패: $fileName", e)
             playing = false
+            activeFileName = null
             releasePlayer()
         }
         onStateChanged(state())
@@ -322,19 +376,12 @@ class LocalAudioPlayer(
     }
 
     private fun currentTitle(): String =
-        if (currentIndex in tracks.indices) {
-            tracks[currentIndex].substringBeforeLast('.')
-        } else {
-            "재생할 곡 없음"
-        }
+        currentFileName()?.substringBeforeLast('.') ?: "재생할 곡 없음"
 
     /** 파일명 '가수 - 제목' 을 가수/제목으로 분리합니다. */
     private fun currentArtistAndTitle(): Pair<String, String> {
-        val name = if (currentIndex in tracks.indices) {
-            tracks[currentIndex].substringBeforeLast('.')
-        } else {
-            return "RoadJ" to "재생할 곡 없음"
-        }
+        val name = currentFileName()?.substringBeforeLast('.')
+            ?: return "RoadJ" to "재생할 곡 없음"
         val separator = name.indexOf(" - ")
         return if (separator > 0) {
             name.substring(0, separator).trim() to name.substring(separator + 3).trim()

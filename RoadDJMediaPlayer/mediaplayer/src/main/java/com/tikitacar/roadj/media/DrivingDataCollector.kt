@@ -1,5 +1,6 @@
 package com.tikitacar.roadj.media
 
+import android.app.Activity
 import android.car.Car
 import android.car.VehiclePropertyIds
 import android.car.hardware.CarPropertyValue
@@ -16,6 +17,7 @@ import ai.pleos.playground.navi.data.DestinationInfo
 import ai.pleos.playground.navi.helper.NaviHelper
 import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
 import androidx.car.app.CarContext
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.tikitacar.roadj.LocalAudioPlayer
 import com.tikitacar.roadj.NearbyPlaceLookup
@@ -53,6 +55,10 @@ object DrivingDataCollector {
     private const val NEARBY_RADIUS_METERS = 400
 
     private const val PERMISSION_CAR_SPEED = "android.car.permission.CAR_SPEED"
+    private const val PERMISSION_CAR_POWERTRAIN = "android.car.permission.CAR_POWERTRAIN"
+
+    /** Activity 에서 기어 권한을 요청할 때 사용하는 request code */
+    const val REQUEST_CAR_POWERTRAIN = 2002
 
     private const val OPEN_WEATHER_API_KEY = "YOUR_OPENWEATHER_API_KEY"
     private const val OPEN_WEATHER_CURRENT_URL =
@@ -97,6 +103,12 @@ object DrivingDataCollector {
     @Volatile
     private var speedPermissionRequested = false
 
+    @Volatile
+    private var gearStarted = false
+
+    @Volatile
+    private var gearPermissionRequested = false
+
     /** 프로세스 시작 시 한 번만 호출합니다. (Application.onCreate) */
     fun start(context: Context) {
         if (started) return
@@ -105,7 +117,8 @@ object DrivingDataCollector {
             appContext = context.applicationContext
             started = true
 
-            PlaybackController.initialize(appContext)
+            PlaybackController.initializeMedia(appContext)
+            SceneController.initialize(appContext)
 
             // 새 곡이 시작될 때마다 주변(Overpass) 정보를 갱신합니다.
             PlaybackController.addListener { state -> onPlaybackState(state) }
@@ -115,7 +128,10 @@ object DrivingDataCollector {
             if (hasSpeedPermission()) {
                 startSpeed()
             }
-            Log.d(TAG, "데이터 수집 시작 (위치/속도/날씨/주변)")
+            if (hasGearPermission()) {
+                startGear()
+            }
+            Log.d(TAG, "데이터 수집 시작 (위치/속도/기어/날씨/주변)")
         }
     }
 
@@ -421,6 +437,138 @@ object DrivingDataCollector {
         if (hasSpeedPermission()) startSpeed()
     }
 
+    // ------------------------------------------------------------------
+    // 기어(Park/Neutral/Drive) 감지 → 씬 전환
+    // ------------------------------------------------------------------
+
+    private fun hasGearPermission(): Boolean =
+        ContextCompat.checkSelfPermission(appContext, PERMISSION_CAR_POWERTRAIN) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** RoadDJ player Activity 에서 기어 권한을 요청합니다. */
+    fun requestGearPermission(activity: Activity) {
+        if (!started) return
+        if (hasGearPermission()) {
+            startGear()
+            return
+        }
+        if (gearPermissionRequested) return
+        gearPermissionRequested = true
+        try {
+            ActivityCompat.requestPermissions(
+                activity,
+                arrayOf(PERMISSION_CAR_POWERTRAIN),
+                REQUEST_CAR_POWERTRAIN
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "기어 권한 요청 실패", e)
+        }
+    }
+
+    /** CarAppService/CarContext 에서 기어 권한을 요청합니다. */
+    fun requestGearPermission(carContext: CarContext) {
+        if (!started) return
+        if (hasGearPermission()) {
+            startGear()
+            return
+        }
+        if (gearPermissionRequested) return
+        gearPermissionRequested = true
+        try {
+            carContext.requestPermissions(listOf(PERMISSION_CAR_POWERTRAIN)) { granted, rejected ->
+                if (granted.contains(PERMISSION_CAR_POWERTRAIN)) {
+                    Log.d(TAG, "기어 권한 승인")
+                    startGear()
+                } else {
+                    Log.w(TAG, "기어 권한 거부: $rejected")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "기어 권한 요청 실패(CarContext)", e)
+        }
+    }
+
+    /** 일반 Activity 에서 기어 권한을 승인받은 뒤 호출합니다. */
+    fun onGearPermissionGranted() {
+        if (!started) return
+        if (hasGearPermission()) startGear()
+    }
+
+    private fun startGear() {
+        if (gearStarted) return
+        gearStarted = true
+
+        thread {
+            try {
+                val connectedCar = car ?: Car.createCar(appContext).also { car = it }
+                val manager = carPropertyManager ?: connectedCar
+                    .getCarManager(Car.PROPERTY_SERVICE) as? CarPropertyManager
+                carPropertyManager = manager
+                if (manager == null) {
+                    Log.w(TAG, "CarPropertyManager 없음 (기어)")
+                    gearStarted = false
+                    return@thread
+                }
+
+                var registered = false
+                try {
+                    manager.registerCallback(
+                        gearCallback,
+                        VehiclePropertyIds.GEAR_SELECTION,
+                        CarPropertyManager.SENSOR_RATE_ONCHANGE
+                    )
+                    registered = true
+                } catch (e: Exception) {
+                    Log.w(TAG, "GEAR_SELECTION 등록 실패", e)
+                }
+                try {
+                    manager.registerCallback(
+                        gearCallback,
+                        VehiclePropertyIds.CURRENT_GEAR,
+                        CarPropertyManager.SENSOR_RATE_ONCHANGE
+                    )
+                    registered = true
+                } catch (e: Exception) {
+                    Log.w(TAG, "CURRENT_GEAR 등록 실패", e)
+                }
+
+                if (!registered) {
+                    gearStarted = false
+                    return@thread
+                }
+
+                SceneController.setGearAvailable(true)
+
+                val initial = runCatching {
+                    manager.getIntProperty(VehiclePropertyIds.GEAR_SELECTION, 0)
+                }.getOrNull()
+                if (initial != null) {
+                    mainHandler.post { SceneController.onGearChanged(initial) }
+                }
+                Log.d(TAG, "기어 수신 시작 (초기 GEAR_SELECTION=$initial)")
+            } catch (e: Exception) {
+                gearStarted = false
+                Log.w(TAG, "기어 수신 시작 실패", e)
+            }
+        }
+    }
+
+    private val gearCallback = object : CarPropertyManager.CarPropertyEventCallback {
+        override fun onChangeEvent(value: CarPropertyValue<*>) {
+            if (value.propertyId != VehiclePropertyIds.GEAR_SELECTION &&
+                value.propertyId != VehiclePropertyIds.CURRENT_GEAR
+            ) {
+                return
+            }
+            val gear = value.value as? Int ?: return
+            mainHandler.post { SceneController.onGearChanged(gear) }
+        }
+
+        override fun onErrorEvent(propId: Int, zone: Int) {
+            Log.w(TAG, "기어 오류: propId=$propId zone=$zone")
+        }
+    }
+
     private fun startSpeed() {
         if (speedStarted) return
         speedStarted = true
@@ -454,12 +602,18 @@ object DrivingDataCollector {
             if (value.propertyId != VehiclePropertyIds.PERF_VEHICLE_SPEED) return
             val speedInMps = value.value as? Float ?: return
             val speedKmh = speedInMps * 3.6f
-            mainHandler.post { PlaybackController.updateSpeed(speedKmh) }
+            mainHandler.post {
+                PlaybackController.updateSpeed(speedKmh)
+                SceneController.onSpeedChanged(speedKmh)
+            }
         }
 
         override fun onErrorEvent(propId: Int, zone: Int) {
             if (propId != VehiclePropertyIds.PERF_VEHICLE_SPEED) return
-            mainHandler.post { PlaybackController.updateSpeed(0f) }
+            mainHandler.post {
+                PlaybackController.updateSpeed(0f)
+                SceneController.onSpeedChanged(0f)
+            }
         }
     }
 }

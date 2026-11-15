@@ -12,7 +12,7 @@ import android.util.Log
  * 사전식(lexicographic) 정렬이며, 마지막에 mood 로 bpm 방향을 정합니다.
  */
 data class CarState(
-    val lang: String,   // ko | en | ja
+    val lang: String,   // all | ko | en | ja
     val event: String,  // none | christmas
     val precip: String, // none | rain | snow
     val place: String,  // none | mountain | sea | river | city
@@ -26,7 +26,9 @@ data class RankedSong(
     val file: String,
     val title: String?,
     val artist: String?,
-    val bpm: Double?
+    val bpm: Double?,
+    /** 곡 언어 (ko/en/ja). tags.db 에 없으면 null. */
+    val lang: String?
 )
 
 /** 태그 표시/계산을 위한 곡 메타데이터 */
@@ -46,9 +48,14 @@ object SongRanker {
     private const val TAG = "RoadJRank"
     private const val DB_NAME = "tags.db"
 
-    /** RANKING.ko.md 의 SQL 점수식. ? 는 9개(lang 1, event 2, precip 2, place 2, time 1, season 1) */
+    /**
+     * RANKING.ko.md 의 SQL 점수식.
+     * ? 는 10개(lang 2, event 2, precip 2, place 2, time 1, season 1).
+     * lang="all" 이면 언어 점수를 0으로 두어 언어 선호 없이 정렬합니다.
+     */
     private val SCORES = """
-        CASE WHEN lang IS NULL THEN 0
+        CASE WHEN ? = 'all' THEN 0
+             WHEN lang IS NULL THEN 0
              WHEN lang = ? THEN 1
              ELSE -1 END AS lang_score,
         CASE WHEN event IS NULL AND ? = 'none' THEN 1
@@ -80,7 +87,7 @@ object SongRanker {
         val db = open(context)
         val dir = if (state.mood == "happy") "DESC" else "ASC"
         val sql = """
-            SELECT id, file, title, artist, bpm,
+            SELECT id, file, title, artist, bpm, lang,
                    $SCORES
             FROM songs
             ORDER BY lang_score   DESC,
@@ -94,7 +101,7 @@ object SongRanker {
         """.trimIndent()
 
         val args = arrayOf(
-            state.lang,
+            state.lang, state.lang,
             state.event, state.event,
             state.precip, state.precip,
             state.place, state.place,
@@ -110,7 +117,8 @@ object SongRanker {
                         file = c.getString(1),
                         title = if (c.isNull(2)) null else c.getString(2),
                         artist = if (c.isNull(3)) null else c.getString(3),
-                        bpm = if (c.isNull(4)) null else c.getDouble(4)
+                        bpm = if (c.isNull(4)) null else c.getDouble(4),
+                        lang = if (c.isNull(5)) null else c.getString(5)
                     )
                 }
             }

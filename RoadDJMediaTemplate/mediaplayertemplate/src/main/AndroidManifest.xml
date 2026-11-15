@@ -13,6 +13,8 @@
     <uses-permission android:name="androidx.car.app.MEDIA_TEMPLATES" />
 
     <uses-permission android:name="android.car.permission.CAR_SPEED" />
+    <!-- Park/Neutral 감지 시 RoadDJ player 앱으로 씬 전환 -->
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
@@ -53,6 +55,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- RoadDJ player 앱에서 넘어온 재생 상태 수신 -->
+        <receiver
+            android:name=".SceneHandoffReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.tikitacar.roadj.action.SCENE_HANDOFF" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".TemplateCarAppService"

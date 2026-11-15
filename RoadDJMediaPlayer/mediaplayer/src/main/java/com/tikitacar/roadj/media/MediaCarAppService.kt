@@ -28,7 +28,7 @@ class MediaCarAppService : CarAppService() {
         HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
 
     override fun onCreateSession(): Session {
-        PlaybackController.initialize(applicationContext)
+        PlaybackController.initializeMedia(applicationContext)
 
         return object : Session() {
             init {
@@ -47,7 +47,7 @@ class MediaCarAppService : CarAppService() {
             }
 
             override fun onCreateScreen(intent: Intent): Screen {
-                PlaybackController.initialize(carContext)
+                PlaybackController.initializeMedia(carContext)
                 return MediaPlaybackScreen(carContext)
             }
         }
